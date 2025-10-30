@@ -19,13 +19,7 @@ __pycache__/
 .env
 .DS_Store
 
-# --- Archivos de salida o temporales ---
-*.xlsx
-*.csv
-*.xls
-*.pdf
-*.zip
-*.bak
+
 
 # --- Configuración local de VS Code ---
 .vscode/
