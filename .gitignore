@@ -1,0 +1,31 @@
+# --- Ignorar entornos virtuales ---
+.venv/
+venv/
+env/
+.venv
+
+# --- Caches y temporales ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.tmp
+
+# --- Checkpoints de Jupyter ---
+.ipynb_checkpoints/
+
+# --- Archivos de entorno ---
+.env
+.DS_Store
+
+# --- Archivos de salida o temporales ---
+*.xlsx
+*.csv
+*.xls
+*.pdf
+*.zip
+*.bak
+
+# --- Configuración local de VS Code ---
+.vscode/
