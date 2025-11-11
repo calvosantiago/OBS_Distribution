@@ -34,3 +34,24 @@ __pycache__/
 !SUDOKU.xlsx
 !Areas_Paises.xlsx
 
+# --- Archivos de compilación y ejecutables ---
+# Carpeta de salida de PyInstaller
+dist/
+build/
+
+# Archivos intermedios o binarios generados
+*.exe
+*.pkg
+*.spec
+
+# --- Archivos temporales del sistema ---
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# --- Archivos comprimidos ---
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
