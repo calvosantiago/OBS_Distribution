@@ -55,3 +55,8 @@ desktop.ini
 *.7z
 *.tar
 *.gz
+
+# binarios grandes
+Distribucion_OBS.exe
+build/
+*.pkg
