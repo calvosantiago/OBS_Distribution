@@ -117,6 +117,48 @@ En abiertos:
 - Fresh anterior a hora de corte (SUDOKU O22) se pasa a `REAP` (`df_corte`).
 - Historico acumulado de calculo = `hist_qbcn + reap_validas + corte`.
 
+### 7.5 Filtros exactos para que un cupon cuente o no cuente
+
+#### A) Filtros para que un cupon entre a distribucion de hoy
+- Se excluye de distribucion si subpilar contiene `pmax` (se preserva en salida final como passthrough).
+- Si es duplicado por email/telefono normalizado, se marca como `Equipo_Z` (sale del flujo normal).
+- Debe pertenecer a equipos comerciales del modelo (`Equipo_A1` a `Equipo_C2`).
+- Debe cumplir alguno de estos criterios tipo/idioma:
+  - `TIPO = MST` y `IDIOMA = ESP`
+  - `TIPO = MBA` y `IDIOMA = ESP`
+  - `IDIOMA = ENG`
+
+#### B) Filtros del historico base de calculo (`df_hist_qbcn`)
+- Excluye `Equipo Asignado = Equipo_Referidos`.
+- Excluye `PILAR_NORM in ['REF/RECUP', 'OTROS']`.
+- Solo equipos comerciales (`Equipo_A1` a `Equipo_C2`).
+- Mismo criterio tipo/idioma que en distribucion:
+  - MST/ESP, MBA/ESP o ENG.
+
+#### C) Filtros para separar `FRESH` y `REAP`
+- `REAP` si `Tipo de Re-Apertura` no esta vacio.
+- `REAP valida` si se puede mapear a equipo por estructura comercial semanal.
+- `FRESH` creado antes del corte (`SUDOKU!O22`) pasa a `REAP` por regla `CUTOFF`.
+- `REAP` invalida vuelve a `FRESH` (salvo si cae en corte).
+
+#### D) Filtros de conteo usados por el modelo en Areas A/B/C
+- Fresh del area:
+  - `AREA` de esa area (`A` o `B` o `C`)
+  - `PILAR_NORM in ['Web', 'Buscadores', 'P.Verticales', 'Redes Sociales']`
+- Historico para el modelo del area:
+  - `EQUIPO_FINAL` en el par del area (ejemplo A1/A2 para area A)
+  - `AREA not in ['T', 'E']`
+  - `PILAR_NORM` en los 4 pilares del modelo
+  - `TIPO` e `IDIOMA` contenidos en el set presente en el fresh de esa area
+
+#### E) Filtro de referencia para cruces de control A1/A2 \"sin T ni E\"
+Para reproducir conteos como 359/339:
+- `EQUIPO_FINAL in ['Equipo_A1', 'Equipo_A2']`
+- `AREA not in ['T', 'E']`
+- `PILAR_NORM in ['Web', 'Buscadores', 'P.Verticales', 'Redes Sociales']`
+- Base de conteo:
+  - historico filtrado + fresh final asignado del dia.
+
 ## 8) Como se calculan los pesos y cadencias
 
 ### 8.1 Pesos base por equipo

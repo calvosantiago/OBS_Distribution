@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 import pandas as pd
 
@@ -29,7 +30,7 @@ class PipelineResult:
     df_fresh: pd.DataFrame
 
 
-def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
+def run_pipeline(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> PipelineResult:
     df_cupones, df_hist, df_areas, df_paises = load_base_inputs(cfg)
     input_rows = len(df_cupones)
     df_pilares_norm = load_pilares_map(cfg)
@@ -84,6 +85,7 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
         df_cupones_open=df_cupones_open,
         df_hist_qbcn=df_hist_qbcn,
         cfg=cfg,
+        cutoff_dt=cutoff_dt,
     )
 
     def _area_team_matrix(df: pd.DataFrame, areas: list[str], teams: list[str]) -> pd.DataFrame:
@@ -187,7 +189,7 @@ def run_pipeline(cfg: PipelineConfig) -> PipelineResult:
     )
 
 
-def run_and_export(cfg: PipelineConfig) -> PipelineResult:
-    result = run_pipeline(cfg)
+def run_and_export(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> PipelineResult:
+    result = run_pipeline(cfg, cutoff_dt=cutoff_dt)
     result.df_final_export.to_excel(cfg.output_path, index=False)
     return result
