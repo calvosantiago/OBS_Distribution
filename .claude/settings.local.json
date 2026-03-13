@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import pandas as pd; df=pd.read_csv\\(''resumen_excluidos.csv''\\); print\\(df.to_string\\(\\)\\)\")",
+      "Bash(python -c \"import pandas as pd; df=pd.read_csv\\(''resumen_excluidos.csv''\\); print\\(''Total excluidos:'', len\\(df\\)\\); print\\(df[''MOTIVO_EXCLUSION''].value_counts\\(\\).to_string\\(\\)\\)\")",
+      "Bash(python -c \"import pandas as pd; df=pd.read_csv\\(''resumen_cupones_excluidos_normalizacion.csv''\\); print\\(''Total excluidos normaliz.:'', len\\(df\\)\\); print\\(df[''MOTIVO_EXCLUSION''].value_counts\\(\\).to_string\\(\\)\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(.venv/Scripts/python -c \"from distribucion_obs.extracted_functions import run_segunda_etapa_v19, distribuir_area_X, distribuir_area_T, distribuir_area_E; print\\(''OK''\\)\")",
+      "Bash(.venv/Scripts/python -c \"import sys; sys.path.insert\\(0,''''\\); from distribucion_obs.extracted_functions import run_segunda_etapa_v19, distribuir_area_X, distribuir_area_T, distribuir_area_E; print\\(''OK''\\)\")",
+      "Bash(python -c \"import pandas; print\\(pandas.__version__\\)\")",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(python -m pip freeze)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''C:/Users/uscp9a/Grupo Planeta/BI POWER - General/Distribución Atenea/Codigos/Distribución OBS/distribucion_obs/extracted_functions.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")"
+    ]
+  }
+}

@@ -3,6 +3,8 @@
 venv/
 env/
 .venv
+.venv*/
+venv*/
 
 # --- Caches y temporales ---
 __pycache__/
@@ -11,6 +13,8 @@ __pycache__/
 *.pyd
 *.log
 *.tmp
+.tmp*/
+.uv_cache/
 
 # --- Checkpoints de Jupyter ---
 .ipynb_checkpoints/
