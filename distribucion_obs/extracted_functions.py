@@ -1736,20 +1736,9 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
                 quota_IG_fresh = max(0, quota_IG_fresh - remove)
 
     # --- Targets por equipo (en función de PESO_NORM sobre total_E) ---
-    team_targets = (df_pesos_E['PESO_NORM'] * total_E).round().astype(int)
-    # Ajuste para que sume exactamente total_E
-    dif_total = total_E - int(team_targets.sum())
-    if dif_total != 0:
-        # corrige el residuo en el equipo con mayor decimal original
-        decimals = (df_pesos_E['PESO_NORM'] * total_E) - (df_pesos_E['PESO_NORM'] * total_E).astype(int)
-        if dif_total > 0:
-            eq_fix = decimals.sort_values(ascending=False).index.tolist()
-        else:
-            eq_fix = decimals.sort_values(ascending=True).index.tolist()
-        for eq in eq_fix:
-            if dif_total == 0: break
-            team_targets.loc[eq] += 1 if dif_total > 0 else -1
-            dif_total += -1 if dif_total > 0 else 1
+    team_targets = ajustar_redondeo_sum_exacta(
+        df_pesos_E['PESO_NORM'] * float(total_E), total=total_E
+    )
 
     # Conteo acumulado actual por equipo (hist ya contiene reaps válidas)
     current_total = hist_counts.reindex(equipos_E, fill_value=0)
@@ -1768,10 +1757,12 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
     pillar_total_fresh = df_fresh_E['PILAR_NORM'].value_counts().reindex(pillars, fill_value=0)
     pillar_total_acum  = pillar_total_hist + pillar_total_reap + pillar_total_fresh
 
-    estimado_pilar_E = pd.DataFrame(
-        {p: (pillar_total_acum[p] * df_pesos_E['PESO_NORM']).round().astype(int) for p in pillars},
-        index=equipos_E
-    )
+    estimado_pilar_E = pd.DataFrame(index=equipos_E, columns=pillars, dtype=int)
+    for p in pillars:
+        estimado_pilar_E[p] = ajustar_redondeo_sum_exacta(
+            df_pesos_E['PESO_NORM'] * float(pillar_total_acum[p]),
+            total=int(pillar_total_acum[p])
+        ).values
 
     # Objetivo DV por pilar en E:
     # fija Web/Buscadores por fracción IG y compensa en Redes Sociales,
@@ -2145,6 +2136,118 @@ def _cadencia_por_equipo(df_hist_total_clean: pd.DataFrame,
         raise ValueError(f"Equipos sin horas válidas para cadencia: {malos}")
     cad = (por_equipo / (h / 6.0)).rename('CADENCIA')
     return cad
+def _lp_reassign_segment(
+    dff_seg: pd.DataFrame,
+    grupo: List[str],
+    slots: Dict[str, int],
+    exp_c: pd.DataFrame,
+    act_c_base: pd.DataFrame,
+    exp_p: pd.DataFrame,
+    act_p_base: pd.DataFrame,
+    var_pais: str,
+    var_prog: str,
+    w_country: float,
+    w_program: float,
+) -> Dict[int, str]:
+    """
+    Resuelve un ILP de transporte para asignar cupones a equipos minimizando
+    la desviación absoluta ponderada de país y programa vs esperado.
+    Retorna {coupon_index: equipo_asignado}.
+    """
+    teams_with_slots = [t for t in grupo if slots.get(t, 0) > 0]
+    if not teams_with_slots or dff_seg.empty:
+        return {}
+
+    # Agrupar cupones por tipo (país, programa)
+    pais_vals = _fill_na(dff_seg[var_pais])
+    prog_vals = _fill_na(dff_seg[var_prog])
+    type_keys = list(zip(pais_vals, prog_vals))
+    type_to_indices: Dict[Tuple[str,str], List[int]] = {}
+    for idx, tk in zip(dff_seg.index, type_keys):
+        type_to_indices.setdefault(tk, []).append(idx)
+    types = sorted(type_to_indices.keys())
+    supply = {tk: len(idxs) for tk, idxs in type_to_indices.items()}
+
+    # Columnas de país y programa presentes
+    countries = sorted(set(tk[0] for tk in types))
+    programs  = sorted(set(tk[1] for tk in types))
+
+    # --- Formulación ILP ---
+    prob = pulp.LpProblem("seg_transport", pulp.LpMinimize)
+
+    # Variables: n[t][(c,p)] = cuántos cupones de tipo (c,p) van al equipo t
+    n = {}
+    for t in teams_with_slots:
+        for tk in types:
+            n[(t, tk)] = pulp.LpVariable(f"n_{t}_{tk[0]}_{tk[1]}", lowBound=0, cat="Integer")
+
+    # Restricciones de capacidad: cada equipo recibe exactamente sus slots
+    for t in teams_with_slots:
+        prob += pulp.lpSum(n[(t, tk)] for tk in types) == slots[t], f"cap_{t}"
+
+    # Restricciones de conservación: cada tipo se asigna completamente
+    for tk in types:
+        prob += pulp.lpSum(n[(t, tk)] for t in teams_with_slots) == supply[tk], f"sup_{tk}"
+
+    # Variables slack para desviación absoluta
+    dc_pos = {}; dc_neg = {}
+    for t in teams_with_slots:
+        for c in countries:
+            dc_pos[(t,c)] = pulp.LpVariable(f"dcp_{t}_{c}", lowBound=0)
+            dc_neg[(t,c)] = pulp.LpVariable(f"dcn_{t}_{c}", lowBound=0)
+    dp_pos = {}; dp_neg = {}
+    for t in teams_with_slots:
+        for p in programs:
+            dp_pos[(t,p)] = pulp.LpVariable(f"dpp_{t}_{p}", lowBound=0)
+            dp_neg[(t,p)] = pulp.LpVariable(f"dpn_{t}_{p}", lowBound=0)
+
+    # Restricciones de desviación: |actual - expected| <= d_pos + d_neg
+    for t in teams_with_slots:
+        for c in countries:
+            # actual_country[t][c] = hist_c[t][c] + sum de n[t][(c,p)] para todo p
+            hist_tc = int(act_c_base.at[t, c]) if (t in act_c_base.index and c in act_c_base.columns) else 0
+            fresh_tc = pulp.lpSum(n[(t, tk)] for tk in types if tk[0] == c)
+            actual_tc = hist_tc + fresh_tc
+            exp_tc = int(exp_c.at[t, c]) if (t in exp_c.index and c in exp_c.columns) else 0
+            prob += actual_tc - exp_tc <= dc_pos[(t,c)]
+            prob += exp_tc - actual_tc <= dc_neg[(t,c)]
+
+        for p in programs:
+            hist_tp = int(act_p_base.at[t, p]) if (t in act_p_base.index and p in act_p_base.columns) else 0
+            fresh_tp = pulp.lpSum(n[(t, tk)] for tk in types if tk[1] == p)
+            actual_tp = hist_tp + fresh_tp
+            exp_tp = int(exp_p.at[t, p]) if (t in exp_p.index and p in exp_p.columns) else 0
+            prob += actual_tp - exp_tp <= dp_pos[(t,p)]
+            prob += exp_tp - actual_tp <= dp_neg[(t,p)]
+
+    # Objetivo: minimizar desviación ponderada
+    prob += (
+        w_country * pulp.lpSum(dc_pos[(t,c)] + dc_neg[(t,c)] for t in teams_with_slots for c in countries) +
+        w_program * pulp.lpSum(dp_pos[(t,p)] + dp_neg[(t,p)] for t in teams_with_slots for p in programs)
+    )
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=30))
+
+    if pulp.LpStatus[prob.status] != "Optimal":
+        return {}  # fallback: caller usará asignación original
+
+    # Extraer solución y asignar cupones específicos
+    assigned: Dict[int, str] = {}
+    for tk in types:
+        coupon_idxs = list(type_to_indices[tk])
+        pos = 0
+        for t in teams_with_slots:
+            count = int(round(pulp.value(n[(t, tk)]) or 0))
+            for idx in coupon_idxs[pos:pos + count]:
+                assigned[idx] = t
+            pos += count
+        # Cupones residuales (por redondeo float) → asignar al equipo con más slots restantes
+        for idx in coupon_idxs[pos:]:
+            remaining_slots = {t: slots[t] - sum(1 for v in assigned.values() if v == t) for t in teams_with_slots}
+            best_t = max(remaining_slots, key=remaining_slots.get)
+            assigned[idx] = best_t
+
+    return assigned
 def _balanced_reassign_pillar(
     df_hist_p: pd.DataFrame,
     df_fresh_p: pd.DataFrame,
@@ -2205,25 +2308,7 @@ def _balanced_reassign_pillar(
     def _segment_team_counts(idxs: List[int]) -> pd.Series:
         return dff.loc[idxs, 'EQUIPO_FINAL'].value_counts().reindex(grupo, fill_value=0).astype(int)
 
-    # Coste ponderado: reducción/aumento de error absoluto (menor es mejor)
-    # Δerror = |(act+1)-exp| - |act-exp|  → -1 mejora, +1 empeora, 0 indiferente
-    def marginal_penalty(team: str, pais_val: str, prog_val: str) -> Tuple[float, float, float]:
-        # País
-        a_c = int(act_c.at[team, pais_val]) if pais_val in act_c.columns else 0
-        e_c = int(exp_c.at[team, pais_val]) if pais_val in exp_c.columns else 0
-        delta_c = abs((a_c + 1) - e_c) - abs(a_c - e_c)
-
-        # Programa
-        a_p = int(act_p.at[team, prog_val]) if prog_val in act_p.columns else 0
-        e_p = int(exp_p.at[team, prog_val]) if prog_val in exp_p.columns else 0
-        delta_p = abs((a_p + 1) - e_p) - abs(a_p - e_p)
-
-        total = (w_country * float(delta_c)) + (w_program * float(delta_p))
-        return total, float(delta_c), float(delta_p)  # total para ordenar, y (delta_c, delta_p) para desempate
-
-    EPS = 1e-12  # tolerancia para empates numéricos
-
-    # Asignación por segmentos con slots exactos
+    # Asignación por segmentos con slots exactos (ILP de transporte)
     for seg_key, idxs in segments:
         if not idxs:
             continue
@@ -2233,123 +2318,27 @@ def _balanced_reassign_pillar(
         if not slots:
             continue
 
-        remaining = slots.copy()
-        remaining_coupons = list(idxs)  # orden estable
-        assigned_team: Dict[int, str] = {}
+        dff_seg = dff.loc[idxs]
+        assigned = _lp_reassign_segment(
+            dff_seg=dff_seg,
+            grupo=grupo,
+            slots=slots,
+            exp_c=exp_c, act_c_base=act_c.copy(),
+            exp_p=exp_p, act_p_base=act_p.copy(),
+            var_pais=var_pais, var_prog=var_prog,
+            w_country=w_country, w_program=w_program,
+        )
 
-        # Greedy ponderado: para cada cupón, elige equipo con slot que minimice el coste total
-        # Desempate: menor (delta_c, delta_p) para preservar una prioridad suave a País
-        while remaining_coupons:
-            best_pair = None
-            best_score = None  # (total_cost, delta_c, delta_p)
-
-            for i in remaining_coupons:
-                ri = dff.loc[i]
-                pais_i = ri[var_pais]
-                prog_i = ri[var_prog]
-                for t, cap in list(remaining.items()):
-                    if cap <= 0:
-                        continue
-                    total, dc, dp = marginal_penalty(t, pais_i, prog_i)
-                    score = (total, dc, dp)
-                    if best_score is None:
-                        best_score = score
-                        best_pair = (i, t, pais_i, prog_i)
-                    else:
-                        # Primero por coste total; si casi empata, desempata por (dc, dp)
-                        if (total < best_score[0] - EPS) or \
-                           (abs(total - best_score[0]) <= EPS and (dc < best_score[1] - EPS or
-                                                                   (abs(dc - best_score[1]) <= EPS and dp < best_score[2] - EPS))):
-                            best_score = score
-                            best_pair = (i, t, pais_i, prog_i)
-
-            # Asignar y actualizar “actuales” (HIST+FRESH) del equipo elegido
-            i, t, pais_i, prog_i = best_pair
-            assigned_team[i] = t
-            remaining[t] -= 1
-            if remaining[t] == 0:
-                del remaining[t]
-            remaining_coupons.remove(i)
-
-            if pais_i in act_c.columns:
-                act_c.at[t, pais_i] += 1
-            if prog_i in act_p.columns:
-                act_p.at[t, prog_i] += 1
-
-        # --- 2-opt "mejor mejora": en cada pasada se evalúan TODOS los pares y se aplica
-        # el intercambio de menor delta (mejor mejora global), no el primero que mejore.
-        # Esto converge a un mejor óptimo local con el mismo coste asintótico por pasada.
-        # Los slots por equipo no cambian (solo se reubican cupones entre equipos).
-        _improved_2opt = True
-        _MAX_PASSES_2OPT = 30
-        _pass_2opt = 0
-        while _improved_2opt and _pass_2opt < _MAX_PASSES_2OPT:
-            _improved_2opt = False
-            _pass_2opt += 1
-            _assigned_list = list(assigned_team.keys())
-            _best_delta = -EPS
-            _best_swap = None  # (_i, _j, _net_c, _net_p)
-            for _ii in range(len(_assigned_list)):
-                _i = _assigned_list[_ii]
-                _ti = assigned_team[_i]
-                _pi = dff.loc[_i, var_pais]
-                _qi = dff.loc[_i, var_prog]
-                for _jj in range(_ii + 1, len(_assigned_list)):
-                    _j = _assigned_list[_jj]
-                    _tj = assigned_team[_j]
-                    if _ti == _tj:
-                        continue
-                    _pj = dff.loc[_j, var_pais]
-                    _qj = dff.loc[_j, var_prog]
-
-                    # Delta de costo si intercambiamos: i→_tj, j→_ti
-                    # Cambios netos por (equipo, valor) para manejar correctamente
-                    # pares con mismo país o programa (_pi==_pj o _qi==_qj).
-                    _net_c: dict = {}
-                    for _t, _v, _d in [(_ti, _pi, -1), (_ti, _pj, +1),
-                                       (_tj, _pj, -1), (_tj, _pi, +1)]:
-                        _key = (_t, _v)
-                        _net_c[_key] = _net_c.get(_key, 0) + _d
-                    _net_p: dict = {}
-                    for _t, _v, _d in [(_ti, _qi, -1), (_ti, _qj, +1),
-                                       (_tj, _qj, -1), (_tj, _qi, +1)]:
-                        _key = (_t, _v)
-                        _net_p[_key] = _net_p.get(_key, 0) + _d
-
-                    _delta = 0.0
-                    for (_t, _v), _d in _net_c.items():
-                        if _d == 0:
-                            continue
-                        _a = int(act_c.at[_t, _v]) if (_v in act_c.columns and _t in act_c.index) else 0
-                        _e = int(exp_c.at[_t, _v]) if (_v in exp_c.columns and _t in exp_c.index) else 0
-                        _delta += w_country * (abs(_a + _d - _e) - abs(_a - _e))
-                    for (_t, _v), _d in _net_p.items():
-                        if _d == 0:
-                            continue
-                        _a = int(act_p.at[_t, _v]) if (_v in act_p.columns and _t in act_p.index) else 0
-                        _e = int(exp_p.at[_t, _v]) if (_v in exp_p.columns and _t in exp_p.index) else 0
-                        _delta += w_program * (abs(_a + _d - _e) - abs(_a - _e))
-
-                    if _delta < _best_delta:
-                        _best_delta = _delta
-                        _best_swap = (_i, _j, _net_c, _net_p)
-
-            if _best_swap is not None:
-                _i, _j, _net_c, _net_p = _best_swap
-                _ti = assigned_team[_i]
-                _tj = assigned_team[_j]
-                assigned_team[_i], assigned_team[_j] = _tj, _ti
-                for (_t, _v), _d in _net_c.items():
-                    if _d != 0 and _v in act_c.columns and _t in act_c.index:
-                        act_c.at[_t, _v] += _d
-                for (_t, _v), _d in _net_p.items():
-                    if _d != 0 and _v in act_p.columns and _t in act_p.index:
-                        act_p.at[_t, _v] += _d
-                _improved_2opt = True
-
-        # Aplicar reasignación del segmento
-        for i, t in assigned_team.items():
-            dff.at[i, 'EQUIPO_FINAL'] = t
+        if assigned:
+            for i, t in assigned.items():
+                dff.at[i, 'EQUIPO_FINAL'] = t
+            for i, t in assigned.items():
+                pais_i = _fill_na(pd.Series([dff.at[i, var_pais]])).iloc[0]
+                prog_i = _fill_na(pd.Series([dff.at[i, var_prog]])).iloc[0]
+                if pais_i in act_c.columns and t in act_c.index:
+                    act_c.at[t, pais_i] += 1
+                if prog_i in act_p.columns and t in act_p.index:
+                    act_p.at[t, prog_i] += 1
 
         # Verificación dura del segmento (slots invariantes)
         seg_counts_after = dff.loc[idxs, 'EQUIPO_FINAL'].value_counts().reindex(grupo, fill_value=0).astype(int)

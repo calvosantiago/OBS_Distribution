@@ -223,6 +223,7 @@ def split_reap_fresh_hist(
     df_cupones_open: pd.DataFrame,
     df_hist_qbcn: pd.DataFrame,
     cfg: PipelineConfig,
+    cutoff_dt: datetime | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     df_cupones_open = df_cupones_open.copy()
     df_cupones_open["TIPO_REPARTO"] = df_cupones_open["Tipo de Re-Apertura"].apply(
@@ -260,10 +261,11 @@ def split_reap_fresh_hist(
     df_cupones_open = limpiar_columnas_duplicadas(df_cupones_open)
     df_reap_invalidas = limpiar_columnas_duplicadas(df_reap_invalidas)
 
-    cutoff_raw = pd.read_excel(cfg.sudoku_path, sheet_name="Estatus diario", header=None, usecols="O", skiprows=21, nrows=1).iat[0, 0]
-    cutoff_dt = pd.to_datetime(cutoff_raw, errors="coerce", dayfirst=True)
-    if pd.isna(cutoff_dt):
-        raise ValueError("No se pudo leer hora de corte desde SUDOKU (Estatus diario!O22).")
+    if cutoff_dt is None:
+        cutoff_raw = pd.read_excel(cfg.sudoku_path, sheet_name="Estatus diario", header=None, usecols="O", skiprows=21, nrows=1).iat[0, 0]
+        cutoff_dt = pd.to_datetime(cutoff_raw, errors="coerce", dayfirst=True)
+        if pd.isna(cutoff_dt):
+            raise ValueError("No se pudo leer hora de corte desde SUDOKU (Estatus diario!O22).")
 
     fechas_open = pd.to_datetime(df_cupones_open.get("Fecha de creación"), errors="coerce", dayfirst=True)
     mask_cutoff = df_cupones_open["TIPO_REPARTO"].eq("FRESH") & fechas_open.notna() & (fechas_open < cutoff_dt)
