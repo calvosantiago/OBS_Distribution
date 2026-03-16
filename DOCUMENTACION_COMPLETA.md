@@ -345,7 +345,7 @@ run_and_export(cfg)
 - Verificar que el archivo mas reciente este en `downloads_dir` con prefijo correcto.
 
 2. `No se pudo leer hora de corte ... O22`
-- Revisar `SUDOKU.xlsx` hoja `Estatus diario`, celda O22.
+- Solo aplica al ejecutar via `run.py`. En el ejecutable `.exe`, la hora de corte se introduce por teclado al inicio (ver seccion 16.5).
 
 3. `Control de filas fallo: entrada != salida`
 - Revisar deduplicacion por ID y columna `INDEX_ORIGINAL`.
@@ -368,6 +368,74 @@ run_and_export(cfg)
 ## 15) Notas sobre archivos legacy
 - `Distribucion_OBS_legacy.ipynb`: version historica/no modular.
 - `Manual_Codigo_Distribucion_OBS.docx`: documentacion previa.
-- `build/` y `dist/`: artefactos de ejecutable.
+- `build/` y `dist/`: artefactos de PyInstaller (ver seccion 16).
 
 El flujo vigente y mantenible para desarrollo actual es el modular (`run.py` + paquete `distribucion_obs`).
+
+## 16) Ejecutable distribuible (.exe)
+
+### 16.1 Descripcion general
+Ademas del flujo de desarrollo (`run.py`), el proyecto genera un ejecutable `Distribucion_OBS.exe` autocontenido mediante PyInstaller. Cualquier usuario con acceso a la carpeta OneDrive puede ejecutarlo sin tener Python instalado.
+
+### 16.2 Archivos involucrados
+
+| Archivo | Rol |
+|---|---|
+| `launcher.py` | Punto de entrada del ejecutable (no es `run.py`) |
+| `build.bat` | Script para compilar/recompilar el ejecutable con doble click |
+| `dist/Distribucion_OBS.exe` | Ejecutable generado por PyInstaller |
+| `Distribucion_OBS.exe` | Copia del exe en la raiz del proyecto (esta es la version que se usa) |
+
+### 16.3 Como recompilar el ejecutable
+Cada vez que se modifique el codigo fuente, ejecutar `build.bat` con doble click. El proceso:
+1. Llama a PyInstaller con Python 3.14
+2. Genera `dist\Distribucion_OBS.exe`
+3. El exe debe copiarse manualmente a la raiz del proyecto para que encuentre `Areas_Paises.xlsx` y `SUDOKU.xlsx`
+
+La carpeta `build/` que genera PyInstaller es temporal y puede borrarse sin problema.
+
+### 16.4 Resolucion de rutas en modo frozen
+En PyInstaller `--onefile`, `__file__` apunta a una carpeta temporal de extraccion (`_MEIxxx`), no a la ubicacion real del exe. `launcher.py` resuelve esto con:
+
+```python
+if getattr(sys, "frozen", False):
+    workspace = Path(sys.executable).resolve().parent  # carpeta del .exe
+else:
+    workspace = Path(__file__).resolve().parent         # modo desarrollo
+```
+
+Por eso el exe debe estar en la misma carpeta que `Areas_Paises.xlsx` y `SUDOKU.xlsx` (la raiz del proyecto en OneDrive).
+
+### 16.5 Hora de corte interactiva
+Al ejecutar el `.exe`, el programa pide la hora de corte por terminal antes de iniciar el pipeline:
+
+```
+==================================================
+  HORA DE CORTE
+  Oportunidades creadas ANTES de esta fecha/hora
+  se trataran como REAP (no redistribuidas).
+==================================================
+  Introduce la hora de corte (DD/MM/AAAA HH:MM): 12/03/2026 11:20
+  -> Corte establecido: 12/03/2026 11:20
+```
+
+Formato requerido: `DD/MM/AAAA HH:MM`. Si el formato es incorrecto, vuelve a pedirlo.
+
+Esto sustituye la lectura de la celda `O22` de `SUDOKU.xlsx`. La funcion `split_reap_fresh_hist()` acepta `cutoff_dt` como parametro opcional: si se pasa, lo usa directamente; si es `None`, lee del SUDOKU (comportamiento legacy de `run.py`).
+
+### 16.6 Paquetes con datos o binarios incluidos explicitamente
+PyInstaller no detecta automaticamente todos los archivos de datos de terceros. El `build.bat` incluye:
+
+| Flag | Paquete | Motivo |
+|---|---|---|
+| `--collect-data country_converter` | country_converter | Archivo `country_data.tsv` |
+| `--collect-all pulp` | pulp | Binario `cbc.exe` del solver CBC |
+| `--collect-data openpyxl` | openpyxl | Templates de archivos Excel |
+
+### 16.7 Distribucion a otros usuarios
+Los usuarios solo necesitan:
+1. `Distribucion_OBS.exe` en la carpeta raiz del proyecto (OneDrive compartida)
+2. `Areas_Paises.xlsx` y `SUDOKU.xlsx` en la misma carpeta (ya estan en OneDrive)
+3. Los archivos `OBS_ESTRUCTURA_COMERCIAL.xlsx` y `OBS_PULL_PUSH.xlsx` sincronizados en su OneDrive
+4. Los archivos de cupones e historico en su carpeta `Downloads` con los prefijos correctos
+
