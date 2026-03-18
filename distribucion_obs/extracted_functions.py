@@ -1125,40 +1125,18 @@ def distribuir_area_T(
     rs_cap = int(tot_acum_p["Redes Sociales"])
     if ig_rs < 0:
         excess = -ig_rs
-        # Si web+busc exceden el total IG bloqueado, recorta primero el pilar
-        # con menor fracción (menos "merecedor" del redondeo hacia arriba).
-        frac_web = ig_float_dv["Web"] - np.floor(ig_float_dv["Web"])
-        frac_busc = ig_float_dv["Buscadores"] - np.floor(ig_float_dv["Buscadores"])
-        order = ["Web", "Buscadores"] if frac_web <= frac_busc else ["Buscadores", "Web"]
-        for p in order:
-            if excess <= 0:
-                break
-            if p == "Web":
-                take = min(excess, ig_web)
-                ig_web -= take
-            else:
-                take = min(excess, ig_busc)
-                ig_busc -= take
-            excess -= take
+        # Web es intocable: solo recorta Buscadores para compensar.
+        take = min(excess, ig_busc)
+        ig_busc -= take
+        excess -= take
         ig_rs = 0
     elif ig_rs > rs_cap:
-        # Si RS no tiene capacidad, reparte excedente en Web/Buscadores.
+        # Si RS no tiene capacidad, reparte excedente solo en Buscadores (Web intocable).
         need = ig_rs - rs_cap
-        frac_web = ig_float_dv["Web"] - np.floor(ig_float_dv["Web"])
-        frac_busc = ig_float_dv["Buscadores"] - np.floor(ig_float_dv["Buscadores"])
-        order = ["Web", "Buscadores"] if frac_web >= frac_busc else ["Buscadores", "Web"]
-        for p in order:
-            if need <= 0:
-                break
-            if p == "Web":
-                room = int(tot_acum_p["Web"]) - ig_web
-                add = min(need, room)
-                ig_web += add
-            else:
-                room = int(tot_acum_p["Buscadores"]) - ig_busc
-                add = min(need, room)
-                ig_busc += add
-            need -= add
+        room = int(tot_acum_p["Buscadores"]) - ig_busc
+        add = min(need, room)
+        ig_busc += add
+        need -= add
         ig_rs = rs_cap
 
     ig_target_dv = {
@@ -1359,7 +1337,7 @@ def distribuir_area_T(
     # DV-level (NUEVO, prioridad máxima - domina sobre team-level)
     PENAL_DV = {'Web': 500, 'Buscadores': 300, 'Redes Sociales': 50}
     BIG_DV   = {'Web': 50000.0, 'Buscadores': 30000.0, 'Redes Sociales': 5000.0}
-    EPS_DV   = {'Web': 1, 'Buscadores': 1, 'Redes Sociales': 3}
+    EPS_DV   = {'Web': 0, 'Buscadores': 1, 'Redes Sociales': 3}
 
     # Pre-computar cupones por pilar (optimización de rendimiento)
     coupons_by_pilar = {p: [c for c in coupons_T if df_fresh_T.at[c, 'PILAR_NORM'] == p] for p in pillars}
@@ -1511,10 +1489,19 @@ def distribuir_area_T(
         delta = (count_acum - est_safe).fillna(0).astype('Int64')
         score = score_delta(delta)
         movimientos = 0
+        ig_set = set(ig_eq)
+        xp_set = set(xp_eq)
+
+        def _same_dv(eq1, eq2):
+            return (eq1 in ig_set and eq2 in ig_set) or (eq1 in xp_set and eq2 in xp_set)
+
         for pilar in pilares_clave:
             while True:
                 delta_p = delta[pilar]; exceso_eq = delta_p.idxmax(); falta_eq = delta_p.idxmin()
                 if int(delta_p.get(exceso_eq,0)) <= 0 or int(delta_p.get(falta_eq,0)) >= 0: break
+                # Web: solo permitir swaps dentro del mismo DV (IG↔IG o XP↔XP)
+                if pilar == 'Web' and not _same_dv(exceso_eq, falta_eq):
+                    break
                 cupones_exceso = df[(df['EQUIPO_FINAL']==exceso_eq) & (df['PILAR_NORM']==pilar)]
                 if cupones_exceso.empty: break
                 realizado = False
@@ -1781,37 +1768,18 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
     rs_cap_E = int(pillar_total_acum['Redes Sociales'])
     if ig_rs_E < 0:
         excess = -ig_rs_E
-        frac_web = ig_float_dv_E['Web'] - np.floor(ig_float_dv_E['Web'])
-        frac_busc = ig_float_dv_E['Buscadores'] - np.floor(ig_float_dv_E['Buscadores'])
-        order = ['Web', 'Buscadores'] if frac_web <= frac_busc else ['Buscadores', 'Web']
-        for p in order:
-            if excess <= 0:
-                break
-            if p == 'Web':
-                take = min(excess, ig_web_E)
-                ig_web_E -= take
-            else:
-                take = min(excess, ig_busc_E)
-                ig_busc_E -= take
-            excess -= take
+        # Web es intocable: solo recorta Buscadores para compensar.
+        take = min(excess, ig_busc_E)
+        ig_busc_E -= take
+        excess -= take
         ig_rs_E = 0
     elif ig_rs_E > rs_cap_E:
+        # Si RS no tiene capacidad, reparte excedente solo en Buscadores (Web intocable).
         need = ig_rs_E - rs_cap_E
-        frac_web = ig_float_dv_E['Web'] - np.floor(ig_float_dv_E['Web'])
-        frac_busc = ig_float_dv_E['Buscadores'] - np.floor(ig_float_dv_E['Buscadores'])
-        order = ['Web', 'Buscadores'] if frac_web >= frac_busc else ['Buscadores', 'Web']
-        for p in order:
-            if need <= 0:
-                break
-            if p == 'Web':
-                room = int(pillar_total_acum['Web']) - ig_web_E
-                add = min(need, room)
-                ig_web_E += add
-            else:
-                room = int(pillar_total_acum['Buscadores']) - ig_busc_E
-                add = min(need, room)
-                ig_busc_E += add
-            need -= add
+        room = int(pillar_total_acum['Buscadores']) - ig_busc_E
+        add = min(need, room)
+        ig_busc_E += add
+        need -= add
         ig_rs_E = rs_cap_E
 
     ig_target_dv_E = {
