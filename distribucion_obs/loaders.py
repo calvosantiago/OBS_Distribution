@@ -13,7 +13,6 @@ _DIC_INGLES_CUPONES = {
     "Opportunity Id": "ID de la Oportunidad",
     "Topic": "Tema",
     "Advised Program of interest from webform": "Programa de Interes",
-    "Program Version of Interest (Originating Lead) (Lead)": "Programa de Interes",
     "Country (Originating Lead) (Lead)": "País",
     "Country (Contact) (Contact)": "País (Contacto) (Contacto)",
     "Pillar (Source Campaign) (Campaign)": "Pillar (Campaña de origen) (Campaña)",
