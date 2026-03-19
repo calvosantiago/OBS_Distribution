@@ -9,15 +9,31 @@ import pandas as pd
 from .config import PipelineConfig
 
 
-_DIC_INGLES = {
+_DIC_INGLES_CUPONES = {
     "Opportunity Id": "ID de la Oportunidad",
     "Topic": "Tema",
     "Advised Program of interest from webform": "Programa de Interes",
-    "Country (Originating Lead) (Lead)": "País",
-    "Pillar (Source Campaign) (Campaign)": "Pillar (Campaña de origen) (Campaña)",
-    "Owner": "Propietario",
     "Program Version of Interest (Originating Lead) (Lead)": "Programa de Interes",
+    "Country (Originating Lead) (Lead)": "País",
+    "Country (Contact) (Contact)": "País (Contacto) (Contacto)",
+    "Pillar (Source Campaign) (Campaign)": "Pillar (Campaña de origen) (Campaña)",
+    "SubPillar (Source Campaign) (Campaign)": "SubPillar (Campaña de origen) (Campaña)",
+    "Owner": "Propietario",
+    "Owner (Originating Opportunity) (Opportunity)": "Propietario (Oportunidad de Origen) (Oportunidad)",
+    "Reopening type": "Tipo de Re-Apertura",
+    "Created On": "Fecha de creación",
+    "Email (Contact) (Contact)": "Email (Contacto) (Contacto)",
+    "Address 1: Phone (Potential Customer) (Contact)": "Teléfono (Cliente potencial) (Contacto)",
     "Status Reason": "Razón para el estado",
+}
+
+_DIC_INGLES_HIST = {
+    "Pillar (Source Campaign) (Campaign)": "Pillar (Campaña de origen) (Campaña)",
+    "SubPillar (Source Campaign) (Campaign)": "SubPillar (Campaña de origen) (Campaña)",
+    "SubPillar Name (Source Campaign) (Campaign)": "SubPillar Name (Campaña de origen) (Campaña)",
+    "Assigned team": "Equipo Asignado",
+    "Sales Team (Owning User) (User)": "Equipo de Ventas (Usuario propietario) (Usuario)",
+    "Country (Contact) (Contact)": "País (Contacto) (Contacto)",
 }
 
 
@@ -64,9 +80,12 @@ def load_base_inputs(cfg: PipelineConfig) -> tuple[pd.DataFrame, pd.DataFrame, p
     df_paises = pd.read_excel(cfg.areas_paises_path, sheet_name="Paises")
 
     if "Opportunity Id" in df_cupones.columns:
-        df_cupones = df_cupones.rename(columns=_DIC_INGLES)
+        df_cupones = df_cupones.rename(columns=_DIC_INGLES_CUPONES)
     if "País (Contacto) (Contacto)" in df_cupones.columns:
         df_cupones = df_cupones.rename(columns={"País (Contacto) (Contacto)": "País"})
+
+    if "Assigned team" in df_hist.columns:
+        df_hist = df_hist.rename(columns=_DIC_INGLES_HIST)
 
     df_areas.columns = [c.strip() for c in df_areas.columns]
     df_paises.columns = [c.strip() for c in df_paises.columns]

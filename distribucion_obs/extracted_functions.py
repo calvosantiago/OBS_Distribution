@@ -328,6 +328,23 @@ def distribuir_area_X(
         delta = (count_acum - est_safe).fillna(0).astype('Int64')
         score = score_delta(delta)
 
+        def _pick_subpillar_col(dframe: pd.DataFrame) -> str | None:
+            candidates = [
+                "SubPillar (Campaña de origen) (Campaña)",
+                "SubPillar Name (Campaña de origen) (Campaña)",
+            ]
+            for c in candidates:
+                if c in dframe.columns:
+                    return c
+            return None
+
+        _sub_col_fresh = _pick_subpillar_col(df)
+        _sn_fresh = (
+            df[_sub_col_fresh].astype(str).str.upper().str.strip()
+            if _sub_col_fresh is not None
+            else pd.Series("", index=df.index)
+        )
+
         movimientos = 0
         for pilar in pilares_clave:
             while True:
@@ -340,6 +357,26 @@ def distribuir_area_X(
                 cupones_exceso = df[(df['EQUIPO_FINAL']==exceso_eq) & (df['PILAR_NORM']==pilar)]
                 if cupones_exceso.empty:
                     break
+
+                # Para Web: mover primero el sub-pilar (SEO/no-SEO) que más necesita el receptor.
+                # Así el swap global y el ajuste de sub-pilar trabajan en la misma dirección.
+                if pilar == 'Web' and _sub_col_fresh is not None:
+                    _recv_web_idx = df.index[(df['EQUIPO_FINAL'] == falta_eq) & (df['PILAR_NORM'] == 'Web')]
+                    _donor_seo_n = _sn_fresh.loc[cupones_exceso.index].str.contains('SEO', na=False).sum()
+                    _recv_seo_n  = _sn_fresh.loc[_recv_web_idx].str.contains('SEO', na=False).sum() if len(_recv_web_idx) > 0 else 0
+                    _donor_web_n = max(1, len(cupones_exceso))
+                    _recv_web_n  = max(1, len(_recv_web_idx))
+                    _is_seo = _sn_fresh.loc[cupones_exceso.index].str.contains('SEO', na=False)
+                    if (_donor_seo_n / _donor_web_n) > (_recv_seo_n / _recv_web_n):
+                        # Donante tiene más SEO proporcionalmente → mover SEO primero al receptor
+                        seo_idx    = _is_seo[_is_seo].index.tolist()
+                        no_seo_idx = _is_seo[~_is_seo].index.tolist()
+                        cupones_exceso = cupones_exceso.loc[seo_idx + no_seo_idx]
+                    else:
+                        # Receptor ya tiene suficiente SEO → mover no-SEO primero
+                        seo_idx    = _is_seo[_is_seo].index.tolist()
+                        no_seo_idx = _is_seo[~_is_seo].index.tolist()
+                        cupones_exceso = cupones_exceso.loc[no_seo_idx + seo_idx]
 
                 realizado = False
                 for p_comp in pilares_compensa:
@@ -378,16 +415,7 @@ def distribuir_area_X(
         # ---------- Ajuste fino de subpilares (sin tocar global por pilar) ----------
         # Regla: solo swaps dentro del mismo pilar (target-subpilar <-> no-target-subpilar).
         # Así se conservan exactamente los conteos por equipo y por pilar.
-        def _pick_subpillar_col(dframe: pd.DataFrame) -> str | None:
-            candidates = [
-                "SubPillar (Campaña de origen) (Campaña)",
-                "SubPillar Name (Campaña de origen) (Campaña)",
-            ]
-            for c in candidates:
-                if c in dframe.columns:
-                    return c
-            return None
-
+        # (_pick_subpillar_col definida antes del loop global)
         sub_col_fresh = _pick_subpillar_col(df)
         sub_col_hist = _pick_subpillar_col(df_hist_area)
 
@@ -452,6 +480,19 @@ def distribuir_area_X(
                 target_float = shares * float(total_target)
                 target_int = ajustar_redondeo_sum_exacta(target_float, total=total_target).reindex(equipos, fill_value=0).astype(int)
                 delta_sub = (actual_target_counts - target_int).astype(int)
+
+                # === DIAGNÓSTICO TEMPORAL ===
+                print(f"\n📊 DIAG subpilar [{pilar_obj}/{token_sub}] Área {sigla_area}")
+                print(f"  Total {token_sub} (hist+fresh): {total_target}")
+                print(f"  Shares:\n{shares.to_string()}")
+                print(f"  Target por equipo:\n{target_int.to_string()}")
+                print(f"  Actual (hist+fresh):\n{actual_target_counts.to_string()}")
+                print(f"  Delta (actual-target):\n{delta_sub.to_string()}")
+                for _eq in equipos:
+                    _n_seo   = int(len(df.index[(df['EQUIPO_FINAL'] == _eq) & mask_target_fresh]))
+                    _n_other = int(len(df.index[(df['EQUIPO_FINAL'] == _eq) & mask_other_fresh]))
+                    print(f"  {_eq}: fresh_{token_sub}={_n_seo}  fresh_no_{token_sub}={_n_other}")
+                # === FIN DIAGNÓSTICO ===
 
                 # Mueve 1 unidad de subpilar target de donante->receptor y compensa con otro cupón del mismo pilar.
                 while True:
