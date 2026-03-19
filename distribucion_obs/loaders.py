@@ -33,6 +33,7 @@ _DIC_INGLES_HIST = {
     "Assigned team": "Equipo Asignado",
     "Sales Team (Owning User) (User)": "Equipo de Ventas (Usuario propietario) (Usuario)",
     "Country (Contact) (Contact)": "País (Contacto) (Contacto)",
+    "Advised Program of interest from webform": "Programa de Interes",
 }
 
 
@@ -80,7 +81,7 @@ def load_base_inputs(cfg: PipelineConfig) -> tuple[pd.DataFrame, pd.DataFrame, p
 
     if "Opportunity Id" in df_cupones.columns:
         df_cupones = df_cupones.rename(columns=_DIC_INGLES_CUPONES)
-    if "País (Contacto) (Contacto)" in df_cupones.columns:
+    if "País (Contacto) (Contacto)" in df_cupones.columns and "País" not in df_cupones.columns:
         df_cupones = df_cupones.rename(columns={"País (Contacto) (Contacto)": "País"})
 
     if "Assigned team" in df_hist.columns:
