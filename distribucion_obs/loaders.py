@@ -74,6 +74,12 @@ def load_base_inputs(cfg: PipelineConfig) -> tuple[pd.DataFrame, pd.DataFrame, p
     cupones_path = _find_latest_file(cfg.downloads_dir, "Oportunidades abiertas No Asignadas JE Totales")
     hist_path = _find_latest_file(cfg.downloads_dir, "qb_CN_V3_OBS")
 
+    print("\n=== ARCHIVOS DE DESCARGAS EN USO ===")
+    print(f"CUPONES: {cupones_path.name}")
+    print(f"  Ruta: {cupones_path}")
+    print(f"HISTORICO: {hist_path.name}")
+    print(f"  Ruta: {hist_path}")
+
     df_cupones = pd.read_excel(cupones_path)
     df_hist = pd.read_excel(hist_path)
     df_areas = pd.read_excel(cfg.areas_paises_path, sheet_name="Areas")
