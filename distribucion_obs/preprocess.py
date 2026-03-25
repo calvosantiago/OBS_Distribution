@@ -162,6 +162,22 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         df_pmax["SPECIAL_KIND"] = "PMAX_PASSTHROUGH"
     df = df.loc[~mask_pmax_today].copy()
 
+    # REF/RECUP y OTROS de hoy: igual que PMAX, no entran en distribución ni en el
+    # cálculo de cadencia. Se preservan en la salida final con su propietario original.
+    _PILARES_EXCLUIDOS = {"REF/RECUP", "OTROS"}
+    if "PILAR_NORM" in df.columns:
+        mask_recup_today = df["PILAR_NORM"].isin(_PILARES_EXCLUIDOS)
+    else:
+        mask_recup_today = pd.Series(False, index=df.index)
+    df_recup = df.loc[mask_recup_today].copy()
+    if not df_recup.empty:
+        if "EQUIPO_FINAL" not in df_recup.columns:
+            df_recup["EQUIPO_FINAL"] = df_recup["Propietario"]
+        else:
+            df_recup["EQUIPO_FINAL"] = df_recup["EQUIPO_FINAL"].fillna(df_recup["Propietario"])
+        df_recup["SPECIAL_KIND"] = "RECUP_PASSTHROUGH"
+    df = df.loc[~mask_recup_today].copy()
+
     email_col = "Email (Contacto) (Contacto)"
     phone_col = "Teléfono (Cliente potencial) (Contacto)"
     df["_EMAIL_N"] = df[email_col].map(_norm_email) if email_col in df.columns else pd.NA
@@ -216,6 +232,9 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     if not df_pmax.empty:
         # Se agregan a especiales para preservarlos en el resultado final, sin redistribución.
         df_special = pd.concat([df_special, df_pmax], ignore_index=False)
+    if not df_recup.empty:
+        # REF/RECUP y OTROS: passthrough idéntico al PMAX.
+        df_special = pd.concat([df_special, df_recup], ignore_index=False)
     return df, df_special
 
 

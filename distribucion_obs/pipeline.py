@@ -79,6 +79,10 @@ def run_pipeline(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> Pipe
         print(f"\nAREA {area}")
         print(d.sort_values("EQUIPO").to_string(index=False))
 
+    recup_hoy = int(df_cupones["PILAR_NORM"].isin(["REF/RECUP", "OTROS"]).sum()) if "PILAR_NORM" in df_cupones.columns else 0
+    print(f"\n=== CONTROL REF/RECUP + OTROS ===")
+    print(f"REF/RECUP y OTROS hoy (passthrough, fuera de cálculo): {recup_hoy}")
+
     df_hist_qbcn = build_hist_qbcn(df_hist, df_areas)
     df_cupones_open, df_special = preprocess_open_coupons(df_cupones)
     df_fresh, df_reap_validas, df_corte, df_hist_total = split_reap_fresh_hist(
