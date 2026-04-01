@@ -12,6 +12,7 @@ class PipelineConfig:
     sudoku_path: Path
     estructura_path: Path
     pilares_path: Path
+    calendario_path: Path
     output_path: Path
     pilar_band_web: float = 0.05
     pilar_band_busc: float = 0.05
@@ -42,5 +43,12 @@ class PipelineConfig:
             / "OBS v2"
             / "0_TTAA"
             / "OBS_PULL_PUSH.xlsx",
+            calendario_path=home
+            / "Grupo Planeta"
+            / "BI POWER - General"
+            / "PBI"
+            / "OBS v2"
+            / "0_TTAA"
+            / "OBS_CALENDARIO_COMERCIAL.xlsx",
             output_path=workspace_dir / "Distribucion_Final.xlsx",
         )

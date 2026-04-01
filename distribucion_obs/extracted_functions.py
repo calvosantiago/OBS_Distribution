@@ -25,25 +25,48 @@ E_TEAM_FIXED_WEIGHTS = {
 }
 E_SHARE_TARGET_IG = 0.50
 
-def obtener_semana_comercial(fecha_actual: datetime) -> str:
-    """Devuelve la semana comercial OBS en formato AÑO-MES-Sn (inicio martes)"""
+def obtener_semana_comercial(fecha_actual: datetime, calendario_path=None) -> str:
+    """Devuelve la semana comercial OBS en formato AÑO-MES-Sn.
+    Consulta OBS_CALENDARIO_COMERCIAL.xlsx (hoja CAL_COM, columna 'SEM NAT').
+    Si no se puede leer el fichero, usa la fórmula de fallback."""
+    from pathlib import Path
+
+    if calendario_path is not None:
+        try:
+            df_cal = pd.read_excel(calendario_path, sheet_name="CAL_COM", usecols=["FECHA", "ams"])
+            df_cal["FECHA"] = pd.to_datetime(df_cal["FECHA"]).dt.date
+            fecha_date = fecha_actual.date() if hasattr(fecha_actual, "date") else fecha_actual
+            fila = df_cal[df_cal["FECHA"] == fecha_date]
+            if not fila.empty:
+                # "ams" tiene formato "2026-10S1" → añadir guión antes de S → "2026-10-S1"
+                raw = str(fila["ams"].iloc[0]).strip()
+                semana = raw[:-2] + "-" + raw[-2:] if raw[-2] == "S" else raw
+                print(f"[OK] Semana comercial actual: {semana}")
+                return semana
+            else:
+                print(
+                    f"[ADVERTENCIA] La fecha {fecha_date} no se encontro en el calendario comercial "
+                    f"({calendario_path.name}). Se usara calculo por formula."
+                )
+        except Exception as e:
+            print(
+                f"[ADVERTENCIA] No se pudo leer el calendario comercial "
+                f"({calendario_path.name}): {e}. Se usara calculo por formula."
+            )
+
+    # --- Fallback por fórmula ---
     año = fecha_actual.year
     mes = fecha_actual.month
-
     primer_dia_mes = datetime(año, mes, 1)
-    primer_martes = primer_dia_mes + timedelta(days=(1 - primer_dia_mes.weekday() + 7) % 7)
-
+    anchor = primer_dia_mes - timedelta(days=2)
+    primer_martes = anchor + timedelta(days=(1 - anchor.weekday() + 7) % 7)
     if fecha_actual < primer_martes:
-        if mes == 1:
-            año -= 1
-            mes = 12
-        else:
-            mes -= 1
-        return obtener_semana_comercial(datetime(año, mes, 1))
-
-    dias_diferencia = (fecha_actual - primer_martes).days
-    numero_semana = dias_diferencia // 7 + 1
-
+        ultimo_dia_mes_ant = primer_dia_mes - timedelta(days=1)
+        año, mes = ultimo_dia_mes_ant.year, ultimo_dia_mes_ant.month
+        primer_dia_mes = datetime(año, mes, 1)
+        anchor = primer_dia_mes - timedelta(days=2)
+        primer_martes = anchor + timedelta(days=(1 - anchor.weekday() + 7) % 7)
+    numero_semana = (fecha_actual - primer_martes).days // 7 + 1
     return f"{año}-{mes:02d}-S{numero_semana}"
 def get_pesos_mensuales(df_sudoku_raw: pd.DataFrame) -> pd.DataFrame:
     """

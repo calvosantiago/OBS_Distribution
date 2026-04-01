@@ -258,7 +258,7 @@ def split_reap_fresh_hist(
     col_origen = "Propietario (Oportunidad de Origen) (Oportunidad)"
     df_cupones_open["NOMBRE_NORMALIZADO"] = df_cupones_open[col_origen].map(dic_normalizacion)
 
-    semana_actual = obtener_semana_comercial(datetime.today())
+    semana_actual = obtener_semana_comercial(datetime.today(), calendario_path=cfg.calendario_path)
     df_ac = df_estructura[
         (df_estructura["ACTIVO"] == "ACTIVO")
         & (df_estructura["ROL"] == "AC")
