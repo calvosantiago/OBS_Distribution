@@ -16,14 +16,14 @@ XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2'}
 
 # Área E: configuración editable de negocio.
 E_TEAM_FIXED_WEIGHTS = {
-    'Equipo_A1': 0.125,
-    'Equipo_B1': 0.25,
-    'Equipo_C1': 0.125,
-    'Equipo_A2': 0.125,
-    'Equipo_B2': 0.375,
+    'Equipo_A1': 0.00,
+    'Equipo_B1': 0.00,
+    'Equipo_C1': 0.00,
+    'Equipo_A2': 0.00,
+    'Equipo_B2': 1,
     'Equipo_C2': 0.00,
 }
-E_SHARE_TARGET_IG = 0.50
+E_SHARE_TARGET_IG = 0
 
 def obtener_semana_comercial(fecha_actual: datetime, calendario_path=None) -> str:
     """Devuelve la semana comercial OBS en formato AÑO-MES-Sn.
