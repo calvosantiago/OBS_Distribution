@@ -2013,6 +2013,7 @@ def _ensure_columns(df: pd.DataFrame, cols: Sequence[str]):
 def _pick_key_column(df: pd.DataFrame, prefer: Optional[str]=None) -> str:
     candidates = [
         prefer,
+        'ID de la Oportunidad',
         'ID Oportunidad', 'Id Oportunidad (Oportunidad)', 'ID_OPORTUNIDAD',
         'ID_CUPON', 'INDEX_ORIGINAL', 'ID', 'Id'
     ]
@@ -2022,6 +2023,13 @@ def _pick_key_column(df: pd.DataFrame, prefer: Optional[str]=None) -> str:
     if 'INDEX_ORIGINAL' in df.columns:
         return 'INDEX_ORIGINAL'
     raise KeyError("No encuentro una columna ID única (pasa 'prefer' con el nombre exacto de tu ID).")
+def _key_values(series: pd.Series) -> pd.Series:
+    values = series.dropna()
+    if pd.api.types.is_numeric_dtype(values):
+        values = values.map(lambda x: str(int(x)) if float(x).is_integer() else str(x))
+    else:
+        values = values.astype(str).str.strip()
+    return values
 def _fill_na(series: pd.Series) -> pd.Series:
     return series.fillna('<NA>').astype(str)
 def _build_expected_by_pillar_value(
@@ -2378,6 +2386,174 @@ def _balanced_reassign_pillar(
                           f"Slots del segmento {seg_key} cambiaron dentro del pilar (lock={lock_cols}).")
 
     return dff
+
+
+def _balanced_reassign_group_cross_pilar(
+    df_hist_g: pd.DataFrame,
+    df_fresh_g: pd.DataFrame,
+    grupo: Sequence[str],
+    pesos_norm_g: pd.Series,
+    var_pais: str,
+    var_prog: str,
+    w_country: float,
+    w_program: float,
+    pillars: Sequence[str] = PILLARS,
+) -> pd.DataFrame:
+    """
+    Reasigna TODOS los fresh de un grupo (todos los pilares a la vez).
+    Invariantes:
+      - Total FRESH por equipo (suma de todos los pilares) = no cambia.
+      - Total FRESH por pilar a nivel de grupo = no cambia (por supply).
+    Se libera:
+      - FRESH por equipo×pilar: PUEDE cambiar (compensación cruzada entre pilares).
+    Objetivo: minimizar desvío de país y programa vs esperado, pilar a pilar.
+    """
+    dff = df_fresh_g.copy()
+    dfh = df_hist_g.copy()
+
+    if dff.empty:
+        return dff
+
+    # Normalizar NA
+    for col in [var_pais, var_prog]:
+        if col in dff.columns:
+            dff[col] = _fill_na(dff[col])
+        if col in dfh.columns:
+            dfh[col] = _fill_na(dfh[col])
+
+    _empty = dff.iloc[0:0]
+
+    # --- Esperados y actuales POR PILAR ---
+    exp_c_pil: Dict[str, pd.DataFrame] = {}
+    act_c_pil: Dict[str, pd.DataFrame] = {}
+    exp_p_pil: Dict[str, pd.DataFrame] = {}
+    act_p_pil: Dict[str, pd.DataFrame] = {}
+
+    for p in pillars:
+        dfh_p = dfh[dfh['PILAR_NORM'] == p]
+        dff_p = dff[dff['PILAR_NORM'] == p]
+        if dff_p.empty and dfh_p.empty:
+            continue
+
+        ec = _build_expected_by_pillar_value(dfh_p, dff_p, grupo, pesos_norm_g, var_pais)
+        ac = _actual_accum_by_pillar_value(dfh_p, _empty, grupo, var_pais)
+        all_c = sorted(set(ec.columns) | set(ac.columns))
+        exp_c_pil[p] = ec.reindex(index=grupo, columns=all_c, fill_value=0).astype(int)
+        act_c_pil[p] = ac.reindex(index=grupo, columns=all_c, fill_value=0).astype(int)
+
+        ep = _build_expected_by_pillar_value(dfh_p, dff_p, grupo, pesos_norm_g, var_prog)
+        ap = _actual_accum_by_pillar_value(dfh_p, _empty, grupo, var_prog)
+        all_pr = sorted(set(ep.columns) | set(ap.columns))
+        exp_p_pil[p] = ep.reindex(index=grupo, columns=all_pr, fill_value=0).astype(int)
+        act_p_pil[p] = ap.reindex(index=grupo, columns=all_pr, fill_value=0).astype(int)
+
+    if not exp_c_pil:
+        return dff
+
+    # --- Tipo clave: (país, programa, pilar) ---
+    pais_vals = _fill_na(dff[var_pais])
+    prog_vals = _fill_na(dff[var_prog])
+    pil_vals = dff['PILAR_NORM']
+    type_keys_raw = list(zip(pais_vals, prog_vals, pil_vals))
+
+    type_to_indices: Dict[Tuple[str, str, str], List[int]] = {}
+    for idx, tk in zip(dff.index, type_keys_raw):
+        type_to_indices.setdefault(tk, []).append(idx)
+    types = sorted(type_to_indices.keys())
+    supply = {tk: len(idxs) for tk, idxs in type_to_indices.items()}
+
+    # Capacidad: total fresh por equipo (invariante de la 1ª etapa)
+    total_per_team = dff['EQUIPO_FINAL'].value_counts().reindex(grupo, fill_value=0)
+    teams = [t for t in grupo if int(total_per_team[t]) > 0]
+
+    if not teams or not types:
+        return dff
+
+    # --- ILP ---
+    prob = pulp.LpProblem("cross_pilar", pulp.LpMinimize)
+
+    n: Dict[Tuple[str, Tuple], pulp.LpVariable] = {}
+    for t in teams:
+        for tk in types:
+            n[(t, tk)] = pulp.LpVariable(
+                f"n_{t}_{tk[0][:8]}_{tk[1][:8]}_{tk[2][:4]}", lowBound=0, cat="Integer"
+            )
+
+    # Supply: cada (país, programa, pilar) se asigna completamente
+    for tk in types:
+        prob += pulp.lpSum(n[(t, tk)] for t in teams) == supply[tk], f"sup_{hash(tk)}"
+
+    # Capacidad: total por equipo = invariante
+    for t in teams:
+        prob += pulp.lpSum(n[(t, tk)] for tk in types) == int(total_per_team[t]), f"cap_{t}"
+
+    # --- Desviaciones por PILAR×EQUIPO×PAÍS y PILAR×EQUIPO×PROGRAMA ---
+    dc_pos: Dict = {}
+    dc_neg: Dict = {}
+    dp_pos: Dict = {}
+    dp_neg: Dict = {}
+
+    for p in exp_c_pil:
+        types_p = [tk for tk in types if tk[2] == p]
+        countries_p = sorted(exp_c_pil[p].columns)
+        programs_p = sorted(exp_p_pil[p].columns)
+
+        for t in teams:
+            for c in countries_p:
+                key = (t, p, c)
+                dc_pos[key] = pulp.LpVariable(f"dcp_{t}_{p[:4]}_{c[:8]}", lowBound=0)
+                dc_neg[key] = pulp.LpVariable(f"dcn_{t}_{p[:4]}_{c[:8]}", lowBound=0)
+                hist_tc = int(act_c_pil[p].at[t, c]) if t in act_c_pil[p].index else 0
+                fresh_tc = pulp.lpSum(n[(t, tk)] for tk in types_p if tk[0] == c)
+                exp_tc = int(exp_c_pil[p].at[t, c]) if t in exp_c_pil[p].index else 0
+                prob += (hist_tc + fresh_tc) - exp_tc <= dc_pos[key]
+                prob += exp_tc - (hist_tc + fresh_tc) <= dc_neg[key]
+
+            for pr in programs_p:
+                key = (t, p, pr)
+                dp_pos[key] = pulp.LpVariable(f"dpp_{t}_{p[:4]}_{pr[:8]}", lowBound=0)
+                dp_neg[key] = pulp.LpVariable(f"dpn_{t}_{p[:4]}_{pr[:8]}", lowBound=0)
+                hist_tp = int(act_p_pil[p].at[t, pr]) if t in act_p_pil[p].index else 0
+                fresh_tp = pulp.lpSum(n[(t, tk)] for tk in types_p if tk[1] == pr)
+                exp_tp = int(exp_p_pil[p].at[t, pr]) if t in exp_p_pil[p].index else 0
+                prob += (hist_tp + fresh_tp) - exp_tp <= dp_pos[key]
+                prob += exp_tp - (hist_tp + fresh_tp) <= dp_neg[key]
+
+    # Objetivo
+    prob += (
+        w_country * pulp.lpSum(dc_pos[k] + dc_neg[k] for k in dc_pos)
+        + w_program * pulp.lpSum(dp_pos[k] + dp_neg[k] for k in dp_pos)
+    )
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=60))
+
+    if pulp.LpStatus[prob.status] != "Optimal":
+        print(f"[WARN] Cross-pilar ILP sin solucion optima para grupo {grupo}. Se mantiene asignacion original.")
+        return dff
+
+    # --- Mapear solución a cupones individuales ---
+    assigned: Dict[int, str] = {}
+    for tk in types:
+        coupon_idxs = list(type_to_indices[tk])
+        pos = 0
+        for t in teams:
+            count = int(round(pulp.value(n[(t, tk)]) or 0))
+            for idx in coupon_idxs[pos:pos + count]:
+                assigned[idx] = t
+            pos += count
+        # Residuales por redondeo
+        for idx in coupon_idxs[pos:]:
+            remaining = {t: int(total_per_team[t]) - sum(1 for v in assigned.values() if v == t)
+                         for t in teams}
+            best_t = max(remaining, key=remaining.get)
+            assigned[idx] = best_t
+
+    for i, t in assigned.items():
+        dff.at[i, 'EQUIPO_FINAL'] = t
+
+    return dff
+
+
 def _segunda_etapa_core(
     df_final_total_clean: pd.DataFrame,
     df_hist_total_clean: pd.DataFrame,
@@ -2523,9 +2699,9 @@ def _segunda_etapa_core(
                 area_updates_parts.append(upd_g[['INDEX_ORIGINAL','EQUIPO_FINAL']])
                 processed_idx_area.update(upd_g['INDEX_ORIGINAL'].tolist())
             else:
-                print(f"[WARN Área {area} Grupo {grupo}] descartado "
-                      f"(H+F eq×pilar={inv_pilar_ok}, FRESH eq={inv_fresh_ok}, "
-                      f"FRESH eq×pilar={inv_fresh_pilar_ok}, LOCK={inv_lock_ok}).")
+                print(f"[WARN Area {area} Grupo {grupo}] descartado "
+                      f"(H+F eq*pilar={inv_pilar_ok}, FRESH eq={inv_fresh_ok}, "
+                      f"FRESH eq*pilar={inv_fresh_pilar_ok}, LOCK={inv_lock_ok}).")
 
         # Commit por área y validación dura por área
         if area_updates_parts:
@@ -2550,8 +2726,8 @@ def _segunda_etapa_core(
                 updates_all.append(upd_area[['INDEX_ORIGINAL','EQUIPO_FINAL']])
                 processed_idx.update(processed_idx_area)
             else:
-                print(f"[ROLLBACK Área {area}] cambios descartados "
-                      f"(FRESH×PILAR / FRESH por equipo / LOCK no invariante).")
+                print(f"[ROLLBACK Area {area}] cambios descartados "
+                      f"(FRESH*PILAR / FRESH por equipo / LOCK no invariante).")
 
     # Aplicar updates aprobados (global)
     if updates_all:
@@ -2562,20 +2738,21 @@ def _segunda_etapa_core(
                                                 .fillna(res.loc[mask_fresh, 'EQUIPO_FINAL'])
 
     res = res.sort_values('INDEX_ORIGINAL', kind='stable').reset_index(drop=True)
+    mask_fresh = res['TIPO_REPARTO'].eq('FRESH')
 
     # Blindajes globales (post)
     fresh_after_global = _counts_fresh_by_team(res.loc[mask_fresh, ['EQUIPO_FINAL']])\
                          .reindex(fresh_baseline_global.index, fill_value=0)
-    _assert_equal_msg(fresh_after_global, fresh_baseline_global, "2ª etapa: cambió el #FRESH por equipo.")
+    _assert_equal_msg(fresh_after_global, fresh_baseline_global, "2a etapa: cambio el #FRESH por equipo.")
 
     tp_after_global = _counts_histplusfresh_by_team_pilar(
         df_hist_total_clean, res.loc[mask_fresh, ['EQUIPO_FINAL','PILAR_NORM']]
     ).reindex(index=tp_baseline_global.index, columns=tp_baseline_global.columns, fill_value=0)
-    _assert_equal_msg(tp_after_global, tp_baseline_global, "2ª etapa: cambió el (equipo×pilar) HIST+FRESH.")
+    _assert_equal_msg(tp_after_global, tp_baseline_global, "2a etapa: cambio el (equipo*pilar) HIST+FRESH.")
 
     fresh_pilar_after_global = _counts_fresh_by_team_pilar(res.loc[mask_fresh, ['EQUIPO_FINAL','PILAR_NORM']])\
                                .reindex(index=fresh_pilar_before_global.index, columns=fresh_pilar_before_global.columns, fill_value=0)
-    _assert_equal_msg(fresh_pilar_after_global, fresh_pilar_before_global, "2ª etapa: cambió el FRESH×PILAR global.")
+    _assert_equal_msg(fresh_pilar_after_global, fresh_pilar_before_global, "2a etapa: cambio el FRESH*PILAR global.")
 
     return res
 def dedup_reap_hist_vs_final(
@@ -2604,15 +2781,16 @@ def dedup_reap_hist_vs_final(
         if verbose: print("[DEDUP] df_final_total no tiene REAP con clave no nula.")
         return dfh, dff
 
-    keys_hist = set(dfh.loc[dfh[key_h].notna(), key_h].astype(str).unique())
-    keys_final_reap = set(reap_final[key_f].astype(str).unique())
+    keys_hist = set(_key_values(dfh[key_h]).unique())
+    keys_final_reap = set(_key_values(reap_final[key_f]).unique())
     dup_keys = keys_final_reap & keys_hist
 
     if not dup_keys:
         if verbose: print("[DEDUP] No hay REAP duplicadas entre HIST y FINAL.")
         return dfh, dff
 
-    mask_drop = dff['TIPO_REPARTO'].eq('REAP') & dff[key_f].astype(str).isin(dup_keys)
+    key_f_norm = _key_values(dff[key_f])
+    mask_drop = dff['TIPO_REPARTO'].eq('REAP') & key_f_norm.reindex(dff.index).isin(dup_keys).fillna(False)
     n_drop = int(mask_drop.sum())
     dff = dff.loc[~mask_drop].copy()
     if verbose:
@@ -2635,10 +2813,11 @@ def construir_final_con_reap(
     if df_reap_org.empty or key_org not in df_reap_org.columns:
         df_final_ajustado = base
     else:
-        keys_base = set(base.loc[base[key_res].notna(), key_res].astype(str).unique())
+        keys_base = set(_key_values(base[key_res]).unique())
+        key_org_norm = _key_values(df_reap_org[key_org])
         reap_to_add = df_reap_org.loc[
             df_reap_org[key_org].notna() &
-            ~df_reap_org[key_org].astype(str).isin(keys_base)
+            ~key_org_norm.reindex(df_reap_org.index).isin(keys_base).fillna(False)
         ].copy()
         df_final_ajustado = pd.concat([base, reap_to_add], ignore_index=True)
         if key_res in df_final_ajustado.columns:
