@@ -1,5 +1,5 @@
 @echo off
-chcp 65001 > /dev/null
+chcp 65001 > nul
 
 set PYTHON=C:\Users\uscp9a\AppData\Local\Python\bin\python.exe
 
