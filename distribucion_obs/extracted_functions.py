@@ -1534,12 +1534,16 @@ def distribuir_area_T(
             # Team-level score (existente)
             team_score = sum(PENAL_AJUSTE.get(p, 1) * float(d[p].abs().sum()) for p in d.columns)
 
-            # DV-level score (NUEVO - domina)
+            # DV-level score: comparar contra los objetivos DV ajustados (est_dv),
+            # no contra la suma del estimado por equipo, porque Redes Sociales compensa Web/Buscadores.
             dv_score = 0.0
+            actual = (d.astype(float) + est_safe.astype(float)).fillna(0.0)
             for p in ['Web', 'Buscadores', 'Redes Sociales']:
                 if p in d.columns:
-                    dv_ig = abs(float(d.loc[ig_eq, p].sum())) if ig_eq else 0.0
-                    dv_xp = abs(float(d.loc[xp_eq, p].sum())) if xp_eq else 0.0
+                    target_ig = float(est_dv.get(('IG', p), est_safe.loc[ig_eq, p].sum()))
+                    target_xp = float(est_dv.get(('XP', p), est_safe.loc[xp_eq, p].sum()))
+                    dv_ig = abs(float(actual.loc[ig_eq, p].sum()) - target_ig) if ig_eq else 0.0
+                    dv_xp = abs(float(actual.loc[xp_eq, p].sum()) - target_xp) if xp_eq else 0.0
                     dv_score += PENAL_DV_AJUSTE.get(p, 1) * (dv_ig + dv_xp)
 
             return dv_score + team_score
@@ -1564,7 +1568,7 @@ def distribuir_area_T(
             while True:
                 delta_p = delta[pilar]; exceso_eq = delta_p.idxmax(); falta_eq = delta_p.idxmin()
                 if int(delta_p.get(exceso_eq,0)) <= 0 or int(delta_p.get(falta_eq,0)) >= 0: break
-                # Web: solo permitir swaps dentro del mismo DV (IG↔IG o XP↔XP)
+                # Web es intocable entre DV; Buscadores puede cruzar DV si compensa Redes Sociales.
                 if pilar == 'Web' and not _same_dv(exceso_eq, falta_eq):
                     break
                 cupones_exceso = df[(df['EQUIPO_FINAL']==exceso_eq) & (df['PILAR_NORM']==pilar)]
