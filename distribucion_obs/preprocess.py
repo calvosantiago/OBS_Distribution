@@ -204,6 +204,12 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     for col in ["TIPO", "IDIOMA", "AREA"]:
         df[col] = df[col].astype(str).str.strip().str.upper()
     df["INDEX_ORIGINAL"] = df.reset_index().index
+    mask_e1_esp = (
+        df["IDIOMA"].astype(str).str.strip().str.upper().eq("ESP")
+        & df["Propietario"].astype(str).str.strip().str.upper().eq("EQUIPO_E1")
+    )
+    if mask_e1_esp.any():
+        df.loc[mask_e1_esp, "EQUIPO_FINAL_EXPORT"] = df.loc[mask_e1_esp, "Propietario"]
     df = _map_equipo_e1_esp_to_b2(df, ["Propietario", "EQUIPO_FINAL"])
 
     # PMAX de hoy: no entran en distribución, pero se preservan en la salida final.
@@ -330,6 +336,7 @@ def split_reap_fresh_hist(
     df_reap_validas = df_reap[df_reap["EQUIPO_REAP"].notna()].copy()
     df_reap_invalidas = df_reap[df_reap["EQUIPO_REAP"].isna()].copy()
     df_reap_validas["EQUIPO_FINAL"] = df_reap_validas["EQUIPO_REAP"]
+    df_reap_validas["EQUIPO_FINAL_EXPORT"] = df_reap_validas["EQUIPO_REAP"]
     df_reap_validas = _map_equipo_e1_esp_to_b2(df_reap_validas, ["EQUIPO_REAP", "EQUIPO_FINAL"])
     df_reap_invalidas["TIPO_REPARTO"] = "FRESH"
 

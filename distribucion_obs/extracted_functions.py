@@ -671,19 +671,22 @@ def distribuir_area_X(
     s_web_neg  = {t: pulp.LpVariable(f"s_web_neg_{t}",  lowBound=0) for t in equipos_X}
     s_bsc_pos  = {t: pulp.LpVariable(f"s_bsc_pos_{t}",  lowBound=0) for t in equipos_X}
     s_bsc_neg  = {t: pulp.LpVariable(f"s_bsc_neg_{t}",  lowBound=0) for t in equipos_X}
+    diff_global = {t: pulp.LpVariable(f"diff_global_{t}", lowBound=0) for t in equipos_X}
 
     # Pesos objetivo
     # Prioridad explícita:
-    # 1) WEB (más importante), 2) Global por equipo (ya va exacto por restricción),
+    # 1) WEB (más importante), 2) Global por equipo,
     # 3) Buscadores, 4) P.Verticales, 5) Redes Sociales (válvula de escape).
-    PENAL_DIFF = {'Web': 120, 'Buscadores': 45, 'P.Verticales': 15, 'Redes Sociales': 0.01}
-    BIG_WEB  = 9000.0
-    BIG_BUSC = 4500.0
+    PENAL_DIFF = {'Web': 50000, 'Buscadores': 500, 'P.Verticales': 15, 'Redes Sociales': 0.01}
+    BIG_WEB    = 20000000.0
+    BIG_GLOBAL = 100000.0
+    BIG_BUSC   = 1000.0
 
     prob = pulp.LpProblem(f"Distribucion_Area_{sigla_area}", pulp.LpMinimize)
     prob += (
         pulp.lpSum(PENAL_DIFF[p] * diff_pilar[(t, p)] for t in equipos_X for p in pillars) +
-        BIG_WEB  * pulp.lpSum(s_web_pos[t] + s_web_neg[t]   for t in equipos_X) +   
+        BIG_WEB    * pulp.lpSum(s_web_pos[t] + s_web_neg[t] for t in equipos_X) +
+        BIG_GLOBAL * pulp.lpSum(diff_global[t] for t in equipos_X) +
         BIG_BUSC * pulp.lpSum(s_bsc_pos[t] + s_bsc_neg[t]   for t in equipos_X)
     )
 
@@ -691,9 +694,12 @@ def distribuir_area_X(
     for c in coupons:
         prob += pulp.lpSum(team_vars[(c, t)] for t in equipos_X) == 1
 
-    # 2) FRESH exacto por equipo (cadencia global exacta)
+    # 2) Global por equipo como objetivo blando: Web puede tener prioridad.
     for t in equipos_X:
-        prob += pulp.lpSum(team_vars[(c, t)] for c in coupons) == int(fresh_target_int.loc[t])
+        assign_t = pulp.lpSum(team_vars[(c, t)] for c in coupons)
+        target_t = int(fresh_target_int.loc[t])
+        prob += assign_t - target_t <= diff_global[t]
+        prob += target_t - assign_t <= diff_global[t]
 
     # 3) Desvío por pilar vs estimado ACUMULADO + bandas blandas Web/Busc
     hist_map = df_hist_area.groupby(['EQUIPO_FINAL', 'PILAR_NORM']).size().to_dict()
@@ -726,7 +732,7 @@ def distribuir_area_X(
         prob += totB - estB <=  epsB + s_bsc_pos[t]
         prob += estB - totB <=  epsB + s_bsc_neg[t]
 
-    print(f"🧩 Resolviendo modelo para área {sigla_area} (cadencia exacta + Web/Busc ajustados)...")
+    print(f"🧩 Resolviendo modelo para área {sigla_area} (Web prioritario + global blando + Busc ajustado)...")
     status = prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit))
     print("📌 Estado del solver:", pulp.LpStatus[prob.status])
 
@@ -1385,6 +1391,7 @@ def distribuir_area_T(
     s_web_neg  = {t: pulp.LpVariable(f"s_web_neg_{t}",  lowBound=0) for t in equipos_T}
     s_bsc_pos  = {t: pulp.LpVariable(f"s_bsc_pos_{t}",  lowBound=0) for t in equipos_T}
     s_bsc_neg  = {t: pulp.LpVariable(f"s_bsc_neg_{t}",  lowBound=0) for t in equipos_T}
+    diff_global = {t: pulp.LpVariable(f"diff_global_T_{t}", lowBound=0) for t in equipos_T}
 
     # --- Variables DV-level (IG/XP agregado) ---
     diff_dv   = {(dv, p): pulp.LpVariable(f"diff_dv_{dv}_{p}", lowBound=0)
@@ -1395,13 +1402,13 @@ def distribuir_area_T(
                  for dv in ['IG', 'XP'] for p in dv_pillars}
 
     # --- Penalizaciones ---
-    # Team-level (existente, secundario)
-    PENAL_DIFF = {'Web': 120, 'Buscadores': 45, 'P.Verticales': 0.5, 'Redes Sociales': 0.01}
-    BIG_WEB, BIG_BUSC = 9000.0, 4500.0
+    # Team-level. Prioridad: Web > global por equipo > Buscadores > P.Verticales > Redes Sociales.
+    PENAL_DIFF = {'Web': 50000, 'Buscadores': 500, 'P.Verticales': 0.5, 'Redes Sociales': 0.01}
+    BIG_WEB, BIG_GLOBAL, BIG_BUSC = 20000000.0, 100000.0, 1000.0
 
-    # DV-level (NUEVO, prioridad máxima - domina sobre team-level)
-    PENAL_DV = {'Web': 500, 'Buscadores': 300, 'Redes Sociales': 50}
-    BIG_DV   = {'Web': 50000.0, 'Buscadores': 30000.0, 'Redes Sociales': 5000.0}
+    # DV-level: misma jerarquía de pilares agregados por directora.
+    PENAL_DV = {'Web': 50000, 'Buscadores': 500, 'Redes Sociales': 50}
+    BIG_DV   = {'Web': 20000000.0, 'Buscadores': 1000.0, 'Redes Sociales': 5000.0}
     EPS_DV   = {'Web': 0, 'Buscadores': 1, 'Redes Sociales': 3}
 
     # Pre-computar cupones por pilar (optimización de rendimiento)
@@ -1416,7 +1423,8 @@ def distribuir_area_T(
                    for dv in ['IG', 'XP'] for p in dv_pillars) +
         # Team-level (PRIORIDAD SECUNDARIA)
         pulp.lpSum(PENAL_DIFF[p] * diff_pilar[(t, p)] for t in equipos_T for p in pillars) +
-        BIG_WEB  * pulp.lpSum(s_web_pos[t] + s_web_neg[t] for t in equipos_T) +
+        BIG_WEB    * pulp.lpSum(s_web_pos[t] + s_web_neg[t] for t in equipos_T) +
+        BIG_GLOBAL * pulp.lpSum(diff_global[t] for t in equipos_T) +
         BIG_BUSC * pulp.lpSum(s_bsc_pos[t] + s_bsc_neg[t] for t in equipos_T)
     )
 
@@ -1424,9 +1432,12 @@ def distribuir_area_T(
     for c in coupons_T:
         prob += pulp.lpSum(team_vars[(c, t)] for t in equipos_T) == 1
 
-    # 2) FRESH EXACTO por equipo (ya respeta cuotas IG/XP)
+    # 2) Global por equipo como objetivo blando: Web puede tener prioridad.
     for t in equipos_T:
-        prob += pulp.lpSum(team_vars[(c, t)] for c in coupons_T) == int(fresh_target_int.loc[t])
+        assign_t = pulp.lpSum(team_vars[(c, t)] for c in coupons_T)
+        target_t = int(fresh_target_int.loc[t])
+        prob += assign_t - target_t <= diff_global[t]
+        prob += target_t - assign_t <= diff_global[t]
 
     # 3) Ajuste por pilar vs estimado ACUMULADO + bandas blandas (TEAM-LEVEL)
     hist_map = df_hist_T.groupby(['EQUIPO_FINAL', 'PILAR_NORM']).size().to_dict()
@@ -1480,7 +1491,7 @@ def distribuir_area_T(
             prob += total_dv_p - est_dv_p <= eps + s_dv_pos[(dv, p)]
             prob += est_dv_p - total_dv_p <= eps + s_dv_neg[(dv, p)]
 
-    print("🧩 Resolviendo modelo para área T (cadencia exacta + cuotas IG/XP + DV-level + Web/Busc ajustados)...")
+    print("🧩 Resolviendo modelo para área T (Web prioritario + global blando + DV-level + Busc ajustado)...")
     try:
         status = prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=time_limit))
         lp_status = pulp.LpStatus[prob.status]
@@ -1646,7 +1657,9 @@ def distribuir_area_T(
     print(cad_pilar)
     print("\n📏 Verificación cadencias Área T")
     print(df_cadencia)
-    print(f"\n✅ IG fresh cuota: {fresh_target_int.reindex(IG_equipos, fill_value=0).sum()} / {quota_IG_fresh} | XP: {fresh_target_int.reindex(XP_equipos, fill_value=0).sum()} / {quota_XP_fresh}")
+    actual_IG_fresh = int(df_fresh_T['EQUIPO_FINAL'].isin(IG_equipos).sum())
+    actual_XP_fresh = int(df_fresh_T['EQUIPO_FINAL'].isin(XP_equipos).sum())
+    print(f"\n✅ IG fresh real/objetivo: {actual_IG_fresh} / {quota_IG_fresh} | XP: {actual_XP_fresh} / {quota_XP_fresh}")
     print(f"🎯 Shares objetivo (PESOS T): IG={share_IG:.2%} XP={share_XP:.2%}")
     if infeasible:
         print("⚠️ Resultado con Fallback proporcional (no MILP). Revisa penalizaciones/bandas/cuotas si deseas una solución óptima MILP.")
@@ -2835,6 +2848,19 @@ def construir_final_con_reap(
 
     if 'INDEX_ORIGINAL' in df_final_ajustado.columns:
         df_final_ajustado = df_final_ajustado.sort_values('INDEX_ORIGINAL', kind='stable').reset_index(drop=True)
+
+    if 'EQUIPO_FINAL_EXPORT' in df_final_ajustado.columns:
+        mask_special_export = (
+            df_final_ajustado['SPECIAL_KIND'].notna()
+            if 'SPECIAL_KIND' in df_final_ajustado.columns
+            else pd.Series(False, index=df_final_ajustado.index)
+        )
+        mask_export = (
+            (df_final_ajustado['TIPO_REPARTO'].eq('REAP') | mask_special_export) &
+            df_final_ajustado['EQUIPO_FINAL_EXPORT'].notna()
+        )
+        df_final_ajustado.loc[mask_export, 'EQUIPO_FINAL'] = df_final_ajustado.loc[mask_export, 'EQUIPO_FINAL_EXPORT']
+        df_final_ajustado = df_final_ajustado.drop(columns=['EQUIPO_FINAL_EXPORT'])
 
     print(f"[FINAL] REAP presentes en df_final_ajustado: {int((df_final_ajustado['TIPO_REPARTO']=='REAP').sum())}")
     return df_final_ajustado
