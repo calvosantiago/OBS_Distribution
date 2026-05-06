@@ -31,14 +31,27 @@ def _mask_pmax(df: pd.DataFrame) -> pd.Series:
     return mask
 
 
-def _map_equipo_e1_esp_to_b2(df: pd.DataFrame, equipo_cols: list[str]) -> pd.DataFrame:
-    if df.empty or "IDIOMA" not in df.columns:
+def _map_equipo_e1_to_b2(df: pd.DataFrame, equipo_cols: list[str]) -> pd.DataFrame:
+    if df.empty:
         return df
-    mask_esp = df["IDIOMA"].astype(str).str.strip().str.upper().eq("ESP")
     for col in equipo_cols:
         if col in df.columns:
             mask_e1 = df[col].astype(str).str.strip().str.upper().eq("EQUIPO_E1")
-            df.loc[mask_esp & mask_e1, col] = "Equipo_B2"
+            df.loc[mask_e1, col] = "Equipo_B2"
+    return df
+
+
+def _infer_missing_english_programs(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "Programa de Interes" not in df.columns:
+        return df
+    missing_area = df["AREA"].isna() | df["TIPO"].isna() | df["IDIOMA"].isna()
+    prog = df["Programa de Interes"].astype(str).str.strip().str.upper()
+
+    mask_lifelong_mst = missing_area & prog.str.startswith("LIFELONG LEARNING MASTER'S DEGREE")
+    df.loc[mask_lifelong_mst, ["AREA", "TIPO", "IDIOMA"]] = ["E", "MST", "ENG"]
+
+    mask_english_mba = missing_area & prog.eq("EXECUTIVE MBA (ENGLISH)")
+    df.loc[mask_english_mba, ["AREA", "TIPO", "IDIOMA"]] = ["E", "MBA", "ENG"]
     return df
 
 
@@ -60,9 +73,11 @@ def enrich_with_area_country_pillar(
 
     merge_cols = df_areas[["PROGRAMA", "Área", "TIPO", "IDIOMA"]].rename(columns={"PROGRAMA": "Programa de Interes"})
     df_cupones = df_cupones.merge(merge_cols, on="Programa de Interes", how="left").rename(columns={"Área": "AREA"})
+    df_cupones = _infer_missing_english_programs(df_cupones)
 
     df_hist = df_hist.drop(columns=["TIPO", "IDIOMA", "AREA"], errors="ignore")
     df_hist = df_hist.merge(merge_cols, on="Programa de Interes", how="left").rename(columns={"Área": "AREA"})
+    df_hist = _infer_missing_english_programs(df_hist)
 
     def corregir_pais(pais: object) -> str:
         if not isinstance(pais, str) or pais.strip() == "":
@@ -145,7 +160,7 @@ def build_hist_qbcn(df_hist: pd.DataFrame, df_areas: pd.DataFrame) -> pd.DataFra
         how="left",
     ).rename(columns={"Área": "AREA"})
 
-    df_hist_qbcn = _map_equipo_e1_esp_to_b2(
+    df_hist_qbcn = _map_equipo_e1_to_b2(
         df_hist_qbcn,
         ["Equipo de Ventas (Usuario propietario) (Usuario)", "Equipo Asignado"],
     )
@@ -166,7 +181,7 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     for col in ["TIPO", "IDIOMA", "AREA"]:
         df[col] = df[col].astype(str).str.strip().str.upper()
     df["INDEX_ORIGINAL"] = df.reset_index().index
-    df = _map_equipo_e1_esp_to_b2(df, ["Propietario", "EQUIPO_FINAL"])
+    df = _map_equipo_e1_to_b2(df, ["Propietario", "EQUIPO_FINAL"])
 
     # PMAX de hoy: no entran en distribución, pero se preservan en la salida final.
     mask_pmax_today = _mask_pmax(df)
@@ -292,7 +307,7 @@ def split_reap_fresh_hist(
     df_reap_validas = df_reap[df_reap["EQUIPO_REAP"].notna()].copy()
     df_reap_invalidas = df_reap[df_reap["EQUIPO_REAP"].isna()].copy()
     df_reap_validas["EQUIPO_FINAL"] = df_reap_validas["EQUIPO_REAP"]
-    df_reap_validas = _map_equipo_e1_esp_to_b2(df_reap_validas, ["EQUIPO_REAP", "EQUIPO_FINAL"])
+    df_reap_validas = _map_equipo_e1_to_b2(df_reap_validas, ["EQUIPO_REAP", "EQUIPO_FINAL"])
     df_reap_invalidas["TIPO_REPARTO"] = "FRESH"
 
     df_cupones_open = limpiar_columnas_duplicadas(df_cupones_open)
