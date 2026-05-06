@@ -12,7 +12,7 @@ from typing import Dict, List, Sequence, Tuple, Optional, Set
 
 PILLARS = ['Web', 'Buscadores', 'P.Verticales', 'Redes Sociales']
 IG_teams = {'Equipo_A1', 'Equipo_B1', 'Equipo_C1'}
-XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2'}
+XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2', 'Equipo_E1'}
 
 # Área E: configuración editable de negocio.
 E_TEAM_FIXED_WEIGHTS = {
@@ -20,8 +20,9 @@ E_TEAM_FIXED_WEIGHTS = {
     'Equipo_B1': 0.00,
     'Equipo_C1': 0.00,
     'Equipo_A2': 0.00,
-    'Equipo_B2': 1.00,
+    'Equipo_B2': 0.00,
     'Equipo_C2': 0.00,
+    'Equipo_E1': 1.00,
 }
 E_SHARE_TARGET_IG = 0.00
 
@@ -1064,7 +1065,7 @@ def distribuir_area_T(
 
     # Map directoras
     IG_teams = {'Equipo_A1', 'Equipo_B1', 'Equipo_C1'}
-    XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2'}
+    XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2', 'Equipo_E1'}
 
     # FRESH / HIST / REAPS (filtros T)
     df_fresh_T = df_fresh[(df_fresh['AREA'] == 'T') & (df_fresh['PILAR_NORM'].isin(pillars))].copy().reset_index(drop=True)
@@ -1672,7 +1673,7 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
 
     # Map de equipos por directora
     IG_teams = {'Equipo_A1', 'Equipo_B1', 'Equipo_C1'}
-    XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2'}
+    XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2', 'Equipo_E1'}
 
     # --- Equipos E y pesos base ---
     df_pesos_E = df_pesos_areas[df_pesos_areas['AREA'] == 'E'][['EQUIPO', 'PESO_BASE']].dropna()
@@ -1686,7 +1687,7 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
 
     if len(IG_equipos) == 0 or len(XP_equipos) == 0:
         print("ADVERTENCIA: Falta al menos un grupo de directora en los equipos de E. "
-              "Verifica que E incluya A1,B1,C1 (IG) y A2,B2,C2 (XP).")
+              "Verifica que E incluya equipos IG y equipos XP.")
 
     # Normaliza y reindexa pesos a los equipos efectivos
     df_pesos_E = df_pesos_E.set_index('EQUIPO').reindex(equipos_E).fillna(0.0)
@@ -2168,6 +2169,8 @@ def _cadencia_por_equipo(df_hist_total_clean: pd.DataFrame,
     fresh = df_fresh_like[['EQUIPO_FINAL']].assign(TIPO='FRESH')
     tot = pd.concat([hist, fresh], ignore_index=True)
     por_equipo = tot['EQUIPO_FINAL'].value_counts().sort_index()
+    # Equipo_E1 solo opera inglés (área E), que no participa en cadencia por horas SUDOKU.
+    por_equipo = por_equipo.drop(index=['Equipo_E1'], errors='ignore')
     h = (df_horas_eq.set_index('EQUIPO')['HORAS']
          .reindex(por_equipo.index)
          .astype(float))
