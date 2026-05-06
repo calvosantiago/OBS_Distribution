@@ -31,6 +31,53 @@ def _mask_pmax(df: pd.DataFrame) -> pd.Series:
     return mask
 
 
+def _map_equipo_e1_esp_to_b2(df: pd.DataFrame, equipo_cols: list[str]) -> pd.DataFrame:
+    if df.empty or "IDIOMA" not in df.columns:
+        return df
+    mask_esp = df["IDIOMA"].astype(str).str.strip().str.upper().eq("ESP")
+    for col in equipo_cols:
+        if col in df.columns:
+            mask_e1 = df[col].astype(str).str.strip().str.upper().eq("EQUIPO_E1")
+            df.loc[mask_esp & mask_e1, col] = "Equipo_B2"
+    return df
+
+
+def _warn_missing_program_normalization(df: pd.DataFrame, source_name: str) -> None:
+    if df.empty or "Programa de Interes" not in df.columns:
+        return
+    required_cols = {"AREA", "TIPO", "IDIOMA"}
+    if not required_cols.issubset(df.columns):
+        return
+
+    missing_norm = df["AREA"].isna() | df["TIPO"].isna() | df["IDIOMA"].isna()
+    if not missing_norm.any():
+        return
+
+    cols = ["Programa de Interes"]
+    if "ID de la Oportunidad" in df.columns:
+        cols.append("ID de la Oportunidad")
+    sample = df.loc[missing_norm, cols].copy()
+    sample["INDEX_ORIGINAL"] = sample.index
+    summary = (
+        sample.groupby("Programa de Interes", dropna=False)
+        .agg(
+            FILAS=("Programa de Interes", "size"),
+            INDEX_ORIGINAL=("INDEX_ORIGINAL", lambda s: ", ".join(map(str, list(s)[:5]))),
+        )
+        .reset_index()
+        .sort_values(["FILAS", "Programa de Interes"], ascending=[False, True])
+    )
+    if "ID de la Oportunidad" in sample.columns:
+        ids = sample.groupby("Programa de Interes", dropna=False)["ID de la Oportunidad"].agg(
+            lambda s: ", ".join(map(str, list(s)[:3]))
+        )
+        summary["IDS_EJEMPLO"] = summary["Programa de Interes"].map(ids)
+
+    print(f"\n[ADVERTENCIA] Programas sin normalizar en Areas_Paises.xlsx ({source_name}):")
+    print("Añádelos en la hoja Areas con Área, TIPO e IDIOMA para que no se descarten.")
+    print(summary.to_string(index=False))
+
+
 def enrich_with_area_country_pillar(
     df_cupones: pd.DataFrame,
     df_hist: pd.DataFrame,
@@ -49,9 +96,11 @@ def enrich_with_area_country_pillar(
 
     merge_cols = df_areas[["PROGRAMA", "Área", "TIPO", "IDIOMA"]].rename(columns={"PROGRAMA": "Programa de Interes"})
     df_cupones = df_cupones.merge(merge_cols, on="Programa de Interes", how="left").rename(columns={"Área": "AREA"})
+    _warn_missing_program_normalization(df_cupones, "cupones abiertos")
 
     df_hist = df_hist.drop(columns=["TIPO", "IDIOMA", "AREA"], errors="ignore")
     df_hist = df_hist.merge(merge_cols, on="Programa de Interes", how="left").rename(columns={"Área": "AREA"})
+    _warn_missing_program_normalization(df_hist, "histórico")
 
     def corregir_pais(pais: object) -> str:
         if not isinstance(pais, str) or pais.strip() == "":
@@ -134,8 +183,13 @@ def build_hist_qbcn(df_hist: pd.DataFrame, df_areas: pd.DataFrame) -> pd.DataFra
         how="left",
     ).rename(columns={"Área": "AREA"})
 
+    df_hist_qbcn = _map_equipo_e1_esp_to_b2(
+        df_hist_qbcn,
+        ["Equipo de Ventas (Usuario propietario) (Usuario)", "Equipo Asignado"],
+    )
+
     equipos_area = {"A": ["Equipo_A1", "Equipo_A2"], "B": ["Equipo_B1", "Equipo_B2"], "C": ["Equipo_C1", "Equipo_C2"]}
-    equipos = sum(equipos_area.values(), [])
+    equipos = sum(equipos_area.values(), []) + ["Equipo_E1"]
 
     filtro_base = (df_hist_qbcn["Equipo Asignado"] != "Equipo_Referidos") & (~df_hist_qbcn["PILAR_NORM"].isin(["REF/RECUP", "OTROS"]))
     filtro_mst_mba_esp = df_hist_qbcn["TIPO"].isin(["MST", "MBA"]) & (df_hist_qbcn["IDIOMA"] == "ESP")
@@ -150,6 +204,7 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     for col in ["TIPO", "IDIOMA", "AREA"]:
         df[col] = df[col].astype(str).str.strip().str.upper()
     df["INDEX_ORIGINAL"] = df.reset_index().index
+    df = _map_equipo_e1_esp_to_b2(df, ["Propietario", "EQUIPO_FINAL"])
 
     # PMAX de hoy: no entran en distribución, pero se preservan en la salida final.
     mask_pmax_today = _mask_pmax(df)
@@ -221,7 +276,7 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     if not df_special.empty:
         df.loc[df_special.index, ["EQUIPO_FINAL", "SPECIAL_KIND"]] = df_special[["EQUIPO_FINAL", "SPECIAL_KIND"]]
 
-    equipos_area = {"A": ["Equipo_A1", "Equipo_A2"], "B": ["Equipo_B1", "Equipo_B2"], "C": ["Equipo_C1", "Equipo_C2"]}
+    equipos_area = {"A": ["Equipo_A1", "Equipo_A2"], "B": ["Equipo_B1", "Equipo_B2"], "C": ["Equipo_C1", "Equipo_C2"], "E": ["Equipo_E1"]}
     equipos_upper = [e.upper() for e in sum(equipos_area.values(), [])]
     mask_equipo = prop_upper.isin(equipos_upper)
     mask_mst_esp = df["TIPO"].eq("MST") & df["IDIOMA"].eq("ESP")
@@ -275,6 +330,7 @@ def split_reap_fresh_hist(
     df_reap_validas = df_reap[df_reap["EQUIPO_REAP"].notna()].copy()
     df_reap_invalidas = df_reap[df_reap["EQUIPO_REAP"].isna()].copy()
     df_reap_validas["EQUIPO_FINAL"] = df_reap_validas["EQUIPO_REAP"]
+    df_reap_validas = _map_equipo_e1_esp_to_b2(df_reap_validas, ["EQUIPO_REAP", "EQUIPO_FINAL"])
     df_reap_invalidas["TIPO_REPARTO"] = "FRESH"
 
     df_cupones_open = limpiar_columnas_duplicadas(df_cupones_open)
