@@ -116,7 +116,7 @@ def load_sudoku_raw(cfg: PipelineConfig) -> pd.DataFrame:
     return pd.read_excel(
         cfg.sudoku_path,
         sheet_name="Estatus diario",
-        usecols="P:U",
+        usecols="P:V",
         skiprows=9,
         nrows=6,
         header=1,

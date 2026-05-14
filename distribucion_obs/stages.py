@@ -4,6 +4,9 @@ import pandas as pd
 
 from .config import PipelineConfig
 from .extracted_functions import (
+    AREA_A_TEAMS,
+    AREA_B_TEAMS,
+    AREA_C_TEAMS,
     distribuir_area_E,
     distribuir_area_T,
     distribuir_area_X,
@@ -24,9 +27,9 @@ def run_first_stage(
     df_special: pd.DataFrame,
     cfg: PipelineConfig,
 ) -> pd.DataFrame:
-    equipos_a = ["Equipo_A1", "Equipo_A2"]
-    equipos_b = ["Equipo_B1", "Equipo_B2"]
-    equipos_c = ["Equipo_C1", "Equipo_C2"]
+    equipos_a = AREA_A_TEAMS
+    equipos_b = AREA_B_TEAMS
+    equipos_c = AREA_C_TEAMS
 
     df_final_a, _, _, _ = distribuir_area_X(
         df_fresh,

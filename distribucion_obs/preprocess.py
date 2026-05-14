@@ -7,6 +7,10 @@ import pandas as pd
 
 from .config import PipelineConfig
 from .extracted_functions import (
+    AREA_A_TEAMS,
+    AREA_B_TEAMS,
+    AREA_C_TEAMS,
+    CORE_TEAMS,
     _norm_email,
     _norm_phone,
     get_pesos_mensuales,
@@ -29,6 +33,46 @@ def _mask_pmax(df: pd.DataFrame) -> pd.Series:
         if col in df.columns:
             mask = mask | df[col].astype(str).str.contains("pmax", case=False, na=False)
     return mask
+
+
+def _mask_google_search_argentina(df: pd.DataFrame) -> pd.Series:
+    """Filas Google Search Argentina que se gestionan fuera de la distribución."""
+    if df.empty:
+        return pd.Series(False, index=df.index)
+
+    subpilar_cols = [
+        "SubPillar (Campaña de origen) (Campaña)",
+        "SubPillar Name (Campaña de origen) (Campaña)",
+    ]
+    subpilar_mask = pd.Series(False, index=df.index)
+    for col in subpilar_cols:
+        if col in df.columns:
+            subpilar_mask = subpilar_mask | df[col].astype(str).str.contains(
+                "google search", case=False, na=False
+            )
+
+    pilar_mask = (
+        df["PILAR_NORM"].astype(str).str.strip().str.upper().eq("BUSCADORES")
+        if "PILAR_NORM" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+
+    pais_cols = [
+        "País Normalizado",
+        "País Corregido",
+        "País",
+        "País (Contacto) (Contacto)",
+        "Country (Contact) (Contact)",
+        "Country (Originating Lead) (Lead)",
+    ]
+    pais_mask = pd.Series(False, index=df.index)
+    for col in pais_cols:
+        if col in df.columns:
+            pais_mask = pais_mask | df[col].astype(str).str.upper().str.contains(
+                "ARGENT", na=False
+            )
+
+    return pilar_mask & subpilar_mask & pais_mask
 
 
 def _map_equipo_e1_esp_to_b2(df: pd.DataFrame, equipo_cols: list[str]) -> pd.DataFrame:
@@ -163,6 +207,16 @@ def enrich_with_area_country_pillar(
     mapa_pilares = dict(zip(df_pilares_norm["PILAR"], df_pilares_norm["PILAR PARA DISTRIBUCION"]))
     df_cupones["PILAR_NORM"] = df_cupones["Pillar (Campaña de origen) (Campaña)"].map(mapa_pilares)
     df_hist["PILAR_NORM"] = df_hist["Pillar (Campaña de origen) (Campaña)"].map(mapa_pilares)
+
+    # Google Search Argentina se gestiona manualmente, igual que PMAX:
+    # no participa en histórico/cadencia ni en distribución.
+    mask_gs_arg_hist = _mask_google_search_argentina(df_hist)
+    if mask_gs_arg_hist.any():
+        print(
+            "\n=== CONTROL GOOGLE SEARCH ARGENTINA ===\n"
+            f"Histórico excluido de cálculo: {int(mask_gs_arg_hist.sum())}"
+        )
+        df_hist = df_hist.loc[~mask_gs_arg_hist].copy()
     return df_cupones, df_hist
 
 
@@ -188,7 +242,7 @@ def build_hist_qbcn(df_hist: pd.DataFrame, df_areas: pd.DataFrame) -> pd.DataFra
         ["Equipo de Ventas (Usuario propietario) (Usuario)", "Equipo Asignado"],
     )
 
-    equipos_area = {"A": ["Equipo_A1", "Equipo_A2"], "B": ["Equipo_B1", "Equipo_B2"], "C": ["Equipo_C1", "Equipo_C2"]}
+    equipos_area = {"A": AREA_A_TEAMS, "B": AREA_B_TEAMS, "C": AREA_C_TEAMS}
     equipos = sum(equipos_area.values(), []) + ["Equipo_E1"]
 
     filtro_base = (df_hist_qbcn["Equipo Asignado"] != "Equipo_Referidos") & (~df_hist_qbcn["PILAR_NORM"].isin(["REF/RECUP", "OTROS"]))
@@ -222,6 +276,17 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
             df_pmax["EQUIPO_FINAL"] = df_pmax["EQUIPO_FINAL"].fillna(df_pmax["Propietario"])
         df_pmax["SPECIAL_KIND"] = "PMAX_PASSTHROUGH"
     df = df.loc[~mask_pmax_today].copy()
+
+    # Google Search Argentina de hoy: misma regla que PMAX.
+    mask_gs_arg_today = _mask_google_search_argentina(df)
+    df_gs_arg = df.loc[mask_gs_arg_today].copy()
+    if not df_gs_arg.empty:
+        if "EQUIPO_FINAL" not in df_gs_arg.columns:
+            df_gs_arg["EQUIPO_FINAL"] = df_gs_arg["Propietario"]
+        else:
+            df_gs_arg["EQUIPO_FINAL"] = df_gs_arg["EQUIPO_FINAL"].fillna(df_gs_arg["Propietario"])
+        df_gs_arg["SPECIAL_KIND"] = "GOOGLE_SEARCH_ARG_PASSTHROUGH"
+    df = df.loc[~mask_gs_arg_today].copy()
 
     # REF/RECUP y OTROS de hoy: igual que PMAX, no entran en distribución ni en el
     # cálculo de cadencia. Se preservan en la salida final con su propietario original.
@@ -282,7 +347,7 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     if not df_special.empty:
         df.loc[df_special.index, ["EQUIPO_FINAL", "SPECIAL_KIND"]] = df_special[["EQUIPO_FINAL", "SPECIAL_KIND"]]
 
-    equipos_area = {"A": ["Equipo_A1", "Equipo_A2"], "B": ["Equipo_B1", "Equipo_B2"], "C": ["Equipo_C1", "Equipo_C2"], "E": ["Equipo_E1"]}
+    equipos_area = {"A": AREA_A_TEAMS, "B": AREA_B_TEAMS, "C": AREA_C_TEAMS, "E": ["Equipo_E1"]}
     equipos_upper = [e.upper() for e in sum(equipos_area.values(), [])]
     mask_equipo = prop_upper.isin(equipos_upper)
     mask_mst_esp = df["TIPO"].eq("MST") & df["IDIOMA"].eq("ESP")
@@ -293,6 +358,9 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     if not df_pmax.empty:
         # Se agregan a especiales para preservarlos en el resultado final, sin redistribución.
         df_special = pd.concat([df_special, df_pmax], ignore_index=False)
+    if not df_gs_arg.empty:
+        # Se agregan a especiales para preservarlos en el resultado final, sin redistribución.
+        df_special = pd.concat([df_special, df_gs_arg], ignore_index=False)
     if not df_recup.empty:
         # REF/RECUP y OTROS: passthrough idéntico al PMAX.
         df_special = pd.concat([df_special, df_recup], ignore_index=False)
@@ -392,7 +460,7 @@ def compute_cadencia_preliminar(
     df_fresh: pd.DataFrame,
     df_horas_eq: pd.DataFrame,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
-    equipos = ["Equipo_A1", "Equipo_A2", "Equipo_B1", "Equipo_B2", "Equipo_C1", "Equipo_C2"]
+    equipos = CORE_TEAMS
     df_hist_base = df_hist_total[df_hist_total["EQUIPO_FINAL"].isin(equipos)].copy()
     hist_a = (
         df_hist_base[(df_hist_base["TIPO"] == "MST") & (df_hist_base["IDIOMA"] == "ESP")]
@@ -445,9 +513,9 @@ def compute_cadencia_preliminar(
         return float(rows[col].sum()) / (h / 6) if h > 0 else 0.0
 
     cad_teo = {
-        "A": _cad_teo_area(["Equipo_A1", "Equipo_A2"], "CUPONES_PRELIM_A"),
-        "B": _cad_teo_area(["Equipo_B1", "Equipo_B2"], "CUPONES_PRELIM_A"),
-        "C": _cad_teo_area(["Equipo_C1", "Equipo_C2"], "CUPONES_PRELIM_A"),
+        "A": _cad_teo_area(AREA_A_TEAMS, "CUPONES_PRELIM_A"),
+        "B": _cad_teo_area(AREA_B_TEAMS, "CUPONES_PRELIM_A"),
+        "C": _cad_teo_area(AREA_C_TEAMS, "CUPONES_PRELIM_A"),
         "T": _cad_teo_area(equipos,                    "CUPONES_PRELIM_T"),
     }
     cad_teo["E"] = cad_teo["T"]

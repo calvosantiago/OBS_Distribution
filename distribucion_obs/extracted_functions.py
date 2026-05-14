@@ -11,20 +11,21 @@ import re
 from typing import Dict, List, Sequence, Tuple, Optional, Set
 
 PILLARS = ['Web', 'Buscadores', 'P.Verticales', 'Redes Sociales']
+AREA_A_TEAMS = ['Equipo_A1', 'Equipo_A2']
+AREA_B_TEAMS = ['Equipo_B1', 'Equipo_B2']
+AREA_C_TEAMS = ['Equipo_C1', 'Equipo_C2', 'Equipo_C4']
+CORE_TEAMS = AREA_A_TEAMS + AREA_B_TEAMS + AREA_C_TEAMS
+
+# DV interna: el codigo historicamente llama "IG" a la DV impar; negocio actual = MG.
 IG_teams = {'Equipo_A1', 'Equipo_B1', 'Equipo_C1'}
-XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2', 'Equipo_E1'}
+XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2', 'Equipo_C4'}
 
 # Área E: configuración editable de negocio.
 E_TEAM_FIXED_WEIGHTS = {
-    'Equipo_A1': 0.00,
-    'Equipo_B1': 0.00,
-    'Equipo_C1': 0.00,
-    'Equipo_A2': 0.00,
-    'Equipo_B2': 0.00,
-    'Equipo_C2': 0.00,
-    'Equipo_E1': 1.00,
+    'Equipo_B1': 0.50,
+    'Equipo_B2': 0.50,
 }
-E_SHARE_TARGET_IG = 0.00
+E_SHARE_TARGET_IG = 0.50
 
 def obtener_semana_comercial(fecha_actual: datetime, calendario_path=None) -> str:
     """Devuelve la semana comercial OBS en formato AÑO-MES-Sn.
@@ -80,8 +81,11 @@ def get_pesos_mensuales(df_sudoku_raw: pd.DataFrame) -> pd.DataFrame:
         'EQUIPO': ['Equipo_' + col.strip() for col in totales.index],
         'HORAS': totales.values
     })
+    df_resultado['HORAS'] = pd.to_numeric(df_resultado['HORAS'], errors='coerce').fillna(0.0)
 
     total_horas = df_resultado['HORAS'].sum()
+    if total_horas <= 0:
+        raise ValueError("No hay horas válidas en la fila de totales del SUDOKU.")
     df_resultado['PESO_BASE'] = df_resultado['HORAS'] / total_horas
 
     # --- Validación visual ---
@@ -92,9 +96,9 @@ def get_pesos_mensuales(df_sudoku_raw: pd.DataFrame) -> pd.DataFrame:
     return df_resultado
 def get_pesos_por_area(df_pesos_actuales: pd.DataFrame) -> dict:
     equipos_area = {
-        'A': ['Equipo_A1', 'Equipo_A2'],
-        'B': ['Equipo_B1', 'Equipo_B2'],
-        'C': ['Equipo_C1', 'Equipo_C2'],
+        'A': AREA_A_TEAMS,
+        'B': AREA_B_TEAMS,
+        'C': AREA_C_TEAMS,
         'T': df_pesos_actuales['EQUIPO'].tolist(),  # Todos los equipos
         'E': E_TEAM_FIXED_WEIGHTS.copy(),  # Pesos fijos para programas en inglés
     }
@@ -1067,11 +1071,11 @@ def distribuir_area_T(
     # ========== Parámetros y filtros ==========
 
     pillars = PILLARS[:]  # ['Web','Buscadores','P.Verticales','Redes Sociales']
-    equipos_T = ['Equipo_A1', 'Equipo_A2', 'Equipo_B1', 'Equipo_B2', 'Equipo_C1', 'Equipo_C2']
+    equipos_T = CORE_TEAMS
 
-    # Map directoras
-    IG_teams = {'Equipo_A1', 'Equipo_B1', 'Equipo_C1'}
-    XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2', 'Equipo_E1'}
+    # Map directoras: IG equivale a DV MG (equipos impares); XP a equipos pares.
+    IG_teams = globals()['IG_teams']
+    XP_teams = globals()['XP_teams']
 
     # FRESH / HIST / REAPS (filtros T)
     df_fresh_T = df_fresh[(df_fresh['AREA'] == 'T') & (df_fresh['PILAR_NORM'].isin(pillars))].copy().reset_index(drop=True)
@@ -1689,8 +1693,9 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
     pillars = ['Buscadores', 'Redes Sociales', 'Web', 'P.Verticales']
 
     # Map de equipos por directora
-    IG_teams = {'Equipo_A1', 'Equipo_B1', 'Equipo_C1'}
-    XP_teams = {'Equipo_A2', 'Equipo_B2', 'Equipo_C2', 'Equipo_E1'}
+    # Map directoras: IG equivale a DV MG (equipos impares); XP a equipos pares.
+    IG_teams = globals()['IG_teams']
+    XP_teams = globals()['XP_teams']
 
     # --- Equipos E y pesos base ---
     df_pesos_E = df_pesos_areas[df_pesos_areas['AREA'] == 'E'][['EQUIPO', 'PESO_BASE']].dropna()
@@ -1727,12 +1732,25 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
     )
     coupons_E = df_fresh_E.index.tolist()
 
-    # --- Histórico válido E (solo equipos E) ---
+    # --- Histórico válido E (solo equipos receptores E) ---
     df_hist_E = (
         df_hist_total[
             (df_hist_total['TIPO'].isin(['MST', 'MBA'])) &
             (df_hist_total['IDIOMA'] == 'ENG') &
             (df_hist_total['EQUIPO_FINAL'].isin(equipos_E)) &
+            (df_hist_total['PILAR_NORM'].isin(pillars))
+        ]
+        .copy()
+    )
+
+    # Histórico E por DV completa: A1/B1/C1 cuentan para MG, A2/B2/C2/C4 para XP,
+    # aunque los fresh nuevos solo se asignen a los receptores activos del área E.
+    equipos_E_dv_hist = sorted(set(IG_teams) | set(XP_teams))
+    df_hist_E_dv = (
+        df_hist_total[
+            (df_hist_total['TIPO'].isin(['MST', 'MBA'])) &
+            (df_hist_total['IDIOMA'] == 'ENG') &
+            (df_hist_total['EQUIPO_FINAL'].isin(equipos_E_dv_hist)) &
             (df_hist_total['PILAR_NORM'].isin(pillars))
         ]
         .copy()
@@ -1751,47 +1769,38 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
 
     # --- Totales base ---
     n_hist  = len(df_hist_E)
+    n_hist_dv = len(df_hist_E_dv)
     n_fresh = len(df_fresh_E)
     # df_hist_E viene de df_hist_total, que ya incluye REAP/CORTE válidos.
-    # Evita doble conteo en objetivos IG/XP.
+    # En E los fresh solo se asignan a B1/B2, pero la cuota DV se calcula con
+    # todo el histórico inglés de los equipos de cada directora.
     total_E = n_hist + n_fresh
+    total_E_dv = n_hist_dv + n_fresh
 
-    # Targets por directora (enteros)
+    # Targets FRESH por directora (enteros), contando el histórico completo de cada DV.
     share_target_IG = float(E_SHARE_TARGET_IG)
     share_target_XP = 1.0 - share_target_IG
-    target_IG_total = int(round(share_target_IG * total_E))
-    target_XP_total = total_E - target_IG_total
+    hist_dv_counts = df_hist_E_dv['EQUIPO_FINAL'].value_counts().reindex(equipos_E_dv_hist, fill_value=0)
+    IG_equipos_dv = sorted([e for e in equipos_E_dv_hist if e in IG_teams])
+    XP_equipos_dv = sorted([e for e in equipos_E_dv_hist if e in XP_teams])
+    fixed_IG_dv = int(hist_dv_counts.reindex(IG_equipos_dv, fill_value=0).sum())
+    fixed_XP_dv = int(hist_dv_counts.reindex(XP_equipos_dv, fill_value=0).sum())
+    target_IG_total = int(round(share_target_IG * total_E_dv))
+    target_XP_total = total_E_dv - target_IG_total
+    quota_IG_fresh = max(0, target_IG_total - fixed_IG_dv)
+    quota_XP_fresh = max(0, target_XP_total - fixed_XP_dv)
 
-    # Conteos fijos por directora (hist, que ya incluye reaps válidas)
-    hist_counts = df_hist_E['EQUIPO_FINAL'].value_counts().reindex(equipos_E, fill_value=0)
-
-    fixed_IG = int(hist_counts.reindex(IG_equipos, fill_value=0).sum())
-    fixed_XP = int(hist_counts.reindex(XP_equipos, fill_value=0).sum())
-
-    # Cuotas de fresh por directora (intentos)
-    quota_IG_fresh = target_IG_total - fixed_IG
-    quota_XP_fresh = target_XP_total - fixed_XP
-
-    # Ajuste de factibilidad: que no sean negativos y que sumen n_fresh
-    quota_IG_fresh = max(0, quota_IG_fresh)
-    quota_XP_fresh = max(0, quota_XP_fresh)
-
-    # Si la suma no cuadra, ajusta proporcionalmente o por resto
     suma_quota = quota_IG_fresh + quota_XP_fresh
     if suma_quota != n_fresh:
-        # Distribuye el desfase al grupo con mayor gap relativo
         diff = n_fresh - suma_quota
-        # Métrica simple de prioridad: quien esté más lejos del target total tras fijos
-        gap_IG = target_IG_total - fixed_IG
-        gap_XP = target_XP_total - fixed_XP
+        gap_IG = target_IG_total - fixed_IG_dv
+        gap_XP = target_XP_total - fixed_XP_dv
         if diff > 0:
-            # tenemos fresh "libres": añadir al que tenga mayor gap
             if gap_IG >= gap_XP:
                 quota_IG_fresh += diff
             else:
                 quota_XP_fresh += diff
         else:
-            # nos sobran cuotas: restar al que tenga menor gap
             remove = -diff
             if gap_IG <= gap_XP:
                 quitar_IG = min(quota_IG_fresh, remove)
@@ -1804,13 +1813,28 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
                 remove -= quitar_XP
                 quota_IG_fresh = max(0, quota_IG_fresh - remove)
 
-    # --- Targets por equipo (en función de PESO_NORM sobre total_E) ---
-    team_targets = ajustar_redondeo_sum_exacta(
-        df_pesos_E['PESO_NORM'] * float(total_E), total=total_E
-    )
+    # Conteos fijos por directora (hist, que ya incluye reaps válidas)
+    hist_counts = df_hist_E['EQUIPO_FINAL'].value_counts().reindex(equipos_E, fill_value=0)
 
-    # Conteo acumulado actual por equipo (hist ya contiene reaps válidas)
+    # Conteo acumulado actual por equipo (hist ya contiene reaps válidas);
+    # el objetivo total equivale a hist + cuota fresh diaria.
     current_total = hist_counts.reindex(equipos_E, fill_value=0)
+
+    # --- Targets por equipo FRESH respetando la cuota DV completa ---
+    fresh_team_targets = pd.Series(0, index=equipos_E, dtype=int)
+    for grupo, quota in [(IG_equipos, quota_IG_fresh), (XP_equipos, quota_XP_fresh)]:
+        if not grupo or quota <= 0:
+            continue
+        pesos_g = df_pesos_E['PESO_NORM'].reindex(grupo).fillna(0.0)
+        if float(pesos_g.sum()) <= 0:
+            pesos_g = pd.Series(1.0 / len(grupo), index=grupo, dtype=float)
+        else:
+            pesos_g = pesos_g / float(pesos_g.sum())
+        fresh_team_targets.loc[grupo] = ajustar_redondeo_sum_exacta(
+            pesos_g * float(quota), total=int(quota)
+        )
+
+    team_targets = current_total.add(fresh_team_targets, fill_value=0).astype(int)
 
     # --- Estimado por pilar (para orientar asignación pillar-aware) ---
     def _pillar_counts_E(df_src, equipos, pils):
@@ -1965,26 +1989,37 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
 
     # --- Comparativas ---
     # Totales finales por equipo = hist + reaps + fresh_asignado
-    final_counts_equipo = (
-        df_fresh_E['EQUIPO_FINAL'].value_counts().add(hist_counts, fill_value=0).astype(int)
-    ).reindex(equipos_E, fill_value=0)
+    final_fresh_counts_equipo = df_fresh_E['EQUIPO_FINAL'].value_counts().reindex(equipos_E, fill_value=0).astype(int)
+    final_counts_equipo = final_fresh_counts_equipo.add(hist_counts, fill_value=0).astype(int).reindex(equipos_E, fill_value=0)
 
-    df_objetivo_equipo = team_targets.rename("Estimado_Equipo")
-    df_asignado_equipo = final_counts_equipo.rename("Asignado_Equipo")
+    df_objetivo_equipo = fresh_team_targets.rename("Estimado_FRESH")
+    df_asignado_equipo = final_fresh_counts_equipo.rename("Asignado_FRESH")
     df_comparativa_equipo = pd.concat([df_objetivo_equipo, df_asignado_equipo], axis=1)
-    df_comparativa_equipo['Delta'] = df_comparativa_equipo['Asignado_Equipo'] - df_comparativa_equipo['Estimado_Equipo']
+    df_comparativa_equipo['Delta'] = df_comparativa_equipo['Asignado_FRESH'] - df_comparativa_equipo['Estimado_FRESH']
 
-    # Resumen por directora IG/XP (final)
-    final_IG = int(final_counts_equipo.reindex(IG_equipos, fill_value=0).sum())
-    final_XP = int(final_counts_equipo.reindex(XP_equipos, fill_value=0).sum())
-    share_IG = final_IG / total_E if total_E > 0 else 0
-    share_XP = final_XP / total_E if total_E > 0 else 0
+    # Resumen por directora IG/XP (acumulado DV completa + FRESH de hoy)
+    final_IG = int(final_fresh_counts_equipo.reindex(IG_equipos, fill_value=0).sum())
+    final_XP = int(final_fresh_counts_equipo.reindex(XP_equipos, fill_value=0).sum())
+    share_IG = final_IG / n_fresh if n_fresh > 0 else 0
+    share_XP = final_XP / n_fresh if n_fresh > 0 else 0
+    acum_IG = fixed_IG_dv + final_IG
+    acum_XP = fixed_XP_dv + final_XP
+    total_acum_dv = acum_IG + acum_XP
 
     df_resumen_directora = pd.DataFrame({
-        'Total_Final': [final_IG, final_XP],
-        'Share_Final': [share_IG, share_XP],
+        'Hist_DV': [fixed_IG_dv, fixed_XP_dv],
+        'Fresh_Final': [final_IG, final_XP],
+        'Share_Fresh': [share_IG, share_XP],
+        'Acum_DV_Final': [acum_IG, acum_XP],
+        'Share_Acum_DV': [
+            acum_IG / total_acum_dv if total_acum_dv > 0 else 0,
+            acum_XP / total_acum_dv if total_acum_dv > 0 else 0,
+        ],
         'Share_Target': [share_target_IG, share_target_XP],
-        'Delta_puntos': [share_IG - share_target_IG, share_XP - share_target_XP]
+        'Delta_puntos': [
+            (acum_IG / total_acum_dv if total_acum_dv > 0 else 0) - share_target_IG,
+            (acum_XP / total_acum_dv if total_acum_dv > 0 else 0) - share_target_XP,
+        ]
     }, index=['IG', 'XP'])
 
     # Por pilar (solo fresh hoy, para inspección)
@@ -1999,13 +2034,11 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
 
     # Avisos de factibilidad
     msgs = []
-    if (final_IG + final_XP) != total_E:
-        msgs.append("ADVERTENCIA: Totales IG+XP no igualan Total E (inspeccionar filtros).")
-    if (final_IG != target_IG_total) or (final_XP != target_XP_total):
+    if (final_IG + final_XP) != n_fresh:
+        msgs.append("ADVERTENCIA: Totales IG+XP no igualan FRESH E (inspeccionar filtros).")
+    if (final_IG != quota_IG_fresh) or (final_XP != quota_XP_fresh):
         msgs.append(
-                    f"Nota: No se pudo igualar exactamente IG={share_target_IG:.0%} / XP={share_target_XP:.0%} "
-                    "por fijos históricos/reaperturas. "
-                    "Se compensó al máximo con los fresh.")
+                    f"Nota: No se pudo igualar exactamente FRESH IG={share_target_IG:.0%} / XP={share_target_XP:.0%}.")
 
     if msgs:
         for m in msgs:
