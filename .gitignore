@@ -21,7 +21,11 @@ __pycache__/
 
 # --- Archivos de entorno ---
 .env
+token_cache.bin
 .DS_Store
+
+# --- Scripts locales ---
+*.ps1
 
 # --- Configuración local de VS Code ---
 .vscode/
