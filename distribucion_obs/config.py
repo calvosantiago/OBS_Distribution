@@ -14,6 +14,11 @@ class PipelineConfig:
     pilares_path: Path
     calendario_path: Path
     output_path: Path
+    input_source: str = "excel"
+    atenea_fecha_inicio: str | None = None
+    atenea_fecha_fin: str | None = None
+    atenea_cache_file: Path | None = None
+    atenea_export_excel: bool = False
     pilar_band_web: float = 0.05
     pilar_band_busc: float = 0.05
     time_limit: int = 90
@@ -51,4 +56,5 @@ class PipelineConfig:
             / "0_TTAA"
             / "OBS_CALENDARIO_COMERCIAL.xlsx",
             output_path=workspace_dir / "Distribucion_Final.xlsx",
+            atenea_cache_file=workspace_dir / "token_cache.bin",
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import country_converter as coco
 import pandas as pd
@@ -122,6 +123,26 @@ def _warn_missing_program_normalization(df: pd.DataFrame, source_name: str) -> N
     print(summary.to_string(index=False))
 
 
+def _build_program_lookup(df_areas: pd.DataFrame) -> pd.DataFrame:
+    alias_cols = ["PROGRAMA", "PROG", "PROG NORM", "NOMBRE CORTO"]
+    frames = []
+    for alias_col in alias_cols:
+        if alias_col not in df_areas.columns:
+            continue
+        tmp = df_areas[[alias_col, "Área", "TIPO", "IDIOMA"]].copy()
+        tmp = tmp.rename(columns={alias_col: "Programa de Interes"})
+        tmp["Programa de Interes"] = tmp["Programa de Interes"].astype(str).str.strip().str.upper()
+        tmp = tmp[tmp["Programa de Interes"].ne("") & tmp["Programa de Interes"].ne("NAN")]
+        frames.append(tmp)
+    if not frames:
+        return pd.DataFrame(columns=["Programa de Interes", "Área", "TIPO", "IDIOMA"])
+    return (
+        pd.concat(frames, ignore_index=True)
+        .drop_duplicates(subset=["Programa de Interes"], keep="first")
+        [["Programa de Interes", "Área", "TIPO", "IDIOMA"]]
+    )
+
+
 def enrich_with_area_country_pillar(
     df_cupones: pd.DataFrame,
     df_hist: pd.DataFrame,
@@ -136,9 +157,7 @@ def enrich_with_area_country_pillar(
 
     df_cupones["Programa de Interes"] = df_cupones["Programa de Interes"].astype(str).str.strip().str.upper()
     df_hist["Programa de Interes"] = df_hist["Programa de Interes"].astype(str).str.strip().str.upper()
-    df_areas["PROGRAMA"] = df_areas["PROGRAMA"].astype(str).str.strip().str.upper()
-
-    merge_cols = df_areas[["PROGRAMA", "Área", "TIPO", "IDIOMA"]].rename(columns={"PROGRAMA": "Programa de Interes"})
+    merge_cols = _build_program_lookup(df_areas)
     df_cupones = df_cupones.merge(merge_cols, on="Programa de Interes", how="left").rename(columns={"Área": "AREA"})
     _warn_missing_program_normalization(df_cupones, "cupones abiertos")
 
@@ -232,7 +251,7 @@ def build_weights(df_sudoku_raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
 def build_hist_qbcn(df_hist: pd.DataFrame, df_areas: pd.DataFrame) -> pd.DataFrame:
     df_hist_qbcn = df_hist.drop(columns=["TIPO", "IDIOMA", "AREA"], errors="ignore")
     df_hist_qbcn = df_hist_qbcn.merge(
-        df_areas[["PROGRAMA", "Área", "TIPO", "IDIOMA"]].rename(columns={"PROGRAMA": "Programa de Interes"}),
+        _build_program_lookup(df_areas),
         on="Programa de Interes",
         how="left",
     ).rename(columns={"Área": "AREA"})
@@ -417,7 +436,18 @@ def split_reap_fresh_hist(
         if pd.isna(cutoff_dt):
             raise ValueError("No se pudo leer hora de corte desde SUDOKU (Estatus diario!O22).")
 
-    fechas_open = pd.to_datetime(df_cupones_open.get("Fecha de creación"), errors="coerce", dayfirst=True)
+    def _parse_created_dates(values: pd.Series | None) -> pd.Series:
+        if values is None:
+            return pd.Series(pd.NaT, index=df_cupones_open.index)
+        if cfg.input_source == "atenea":
+            return (
+                pd.to_datetime(values, errors="coerce", utc=True)
+                .dt.tz_convert(ZoneInfo("Europe/Madrid"))
+                .dt.tz_localize(None)
+            )
+        return pd.to_datetime(values, errors="coerce", dayfirst=True)
+
+    fechas_open = _parse_created_dates(df_cupones_open.get("Fecha de creación"))
     mask_cutoff = df_cupones_open["TIPO_REPARTO"].eq("FRESH") & fechas_open.notna() & (fechas_open < cutoff_dt)
     df_corte = df_cupones_open.loc[mask_cutoff].copy()
     if not df_corte.empty:
@@ -430,7 +460,14 @@ def split_reap_fresh_hist(
         df_cupones_open.loc[mask_cutoff, "TIPO_REPARTO"] = "REAP"
 
     if (not df_reap_invalidas.empty) and ("Fecha de creación" in df_reap_invalidas.columns):
-        fechas_inv = pd.to_datetime(df_reap_invalidas["Fecha de creación"], errors="coerce", dayfirst=True)
+        if cfg.input_source == "atenea":
+            fechas_inv = (
+                pd.to_datetime(df_reap_invalidas["Fecha de creación"], errors="coerce", utc=True)
+                .dt.tz_convert(ZoneInfo("Europe/Madrid"))
+                .dt.tz_localize(None)
+            )
+        else:
+            fechas_inv = pd.to_datetime(df_reap_invalidas["Fecha de creación"], errors="coerce", dayfirst=True)
         mask_cutoff_inv = fechas_inv.notna() & (fechas_inv < cutoff_dt)
         if mask_cutoff_inv.any():
             df_corte_inv = df_reap_invalidas.loc[mask_cutoff_inv].copy()
