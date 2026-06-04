@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 > nul
 
-set PYTHON=C:\Users\uscp9a\AppData\Local\Python\bin\python.exe
+set PYTHON=%~dp0.venv\Scripts\python.exe
 
 echo ============================================
 echo  Construyendo Distribucion_OBS_Atenea.exe
