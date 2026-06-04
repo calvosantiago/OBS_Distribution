@@ -17,6 +17,7 @@ import copy
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from html import escape as html_escape
+from pathlib import Path
 
 # zoneinfo viene incluido en Python 3.9+
 # En Windows puede necesitar: pip install tzdata
@@ -326,12 +327,36 @@ def _first_non_empty(df: pd.DataFrame, sources: list[str]) -> pd.Series:
     return values
 
 
+def _format_madrid_datetime(values: pd.Series) -> pd.Series:
+    parsed = pd.to_datetime(values, errors="coerce")
+    formatted = (
+        parsed.dt.strftime("%d/%m/%Y  ")
+        + parsed.dt.hour.astype("Int64").astype(str)
+        + parsed.dt.strftime(":%M:%S")
+    )
+    return formatted.where(parsed.notna(), values)
+
+
+def _sort_by_raw_createdon(export_df: pd.DataFrame, raw_df: pd.DataFrame) -> pd.DataFrame:
+    if "createdon" not in raw_df.columns:
+        return export_df
+    sort_key = pd.to_datetime(raw_df["createdon"], errors="coerce")
+    return (
+        export_df.assign(_SORT_CREATEDON=sort_key)
+        .sort_values("_SORT_CREATEDON", kind="stable", na_position="last")
+        .drop(columns="_SORT_CREATEDON")
+        .reset_index(drop=True)
+    )
+
+
 def format_qbcn_export(df: pd.DataFrame) -> pd.DataFrame:
     export_df = pd.DataFrame(index=df.index)
     for column in QBCN_EXPORT_COLUMNS:
         sources = QBCN_EXPORT_MAP.get(column, [])
         export_df[column] = _first_non_empty(df, sources) if sources else pd.NA
-    return export_df
+    for column in [c for c in QBCN_EXPORT_COLUMNS if "Fecha" in c or c.endswith("Date")]:
+        export_df[column] = _format_madrid_datetime(export_df[column])
+    return _sort_by_raw_createdon(export_df, df)
 
 
 def format_op_no_asig_export(df: pd.DataFrame) -> pd.DataFrame:
@@ -339,7 +364,9 @@ def format_op_no_asig_export(df: pd.DataFrame) -> pd.DataFrame:
     for column in OP_NO_ASIG_EXPORT_COLUMNS:
         sources = OP_NO_ASIG_EXPORT_MAP.get(column, [])
         export_df[column] = _first_non_empty(df, sources) if sources else pd.NA
-    return export_df
+    for column in [c for c in OP_NO_ASIG_EXPORT_COLUMNS if "Fecha" in c]:
+        export_df[column] = _format_madrid_datetime(export_df[column])
+    return _sort_by_raw_createdon(export_df, df)
 
 def extraer_datos_atenea(
     fecha_inicio_input: str,
@@ -868,14 +895,16 @@ def extraer_datos_atenea(
     # =============================================================================
     if export_excel:
         if output_file is None:
-            output_file = f"leads_{fecha_inicio_input}_{fecha_fin_input}.xlsx"
+            output_file = Path("leads") / f"leads_{fecha_inicio_input}_{fecha_fin_input}.xlsx"
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         df_qbcn_export = format_qbcn_export(globals()[nombre_df])
         df_op_no_asig_export = format_op_no_asig_export(df2)
-        with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             df_qbcn_export.to_excel(writer, sheet_name=nombre_df,  index=False)
             df_op_no_asig_export.to_excel(writer, sheet_name=nombre_df2, index=False)
 
-        print(f"\n✓ Exportado a: {output_file}")
+        print(f"\n✓ Exportado a: {output_path}")
         print(f"  · Hoja 1: {nombre_df}   ({df_qbcn_export.shape[0]} filas)")
         print(f"  · Hoja 2: {nombre_df2}  ({df_op_no_asig_export.shape[0]} filas)")
 
