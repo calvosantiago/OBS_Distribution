@@ -249,6 +249,16 @@ def normalize_atenea_inputs(
     return df_cupones, df_hist
 
 
+def _sort_atenea_raw_by_createdon(df: pd.DataFrame) -> pd.DataFrame:
+    if "createdon" not in df.columns:
+        return df.copy()
+    sort_df = df.copy()
+    sort_key = pd.to_datetime(sort_df["createdon"], errors="coerce", utc=True)
+    sort_df = sort_df.assign(_SORT_CREATEDON=sort_key)
+    sort_df = sort_df.sort_values("_SORT_CREATEDON", kind="stable", na_position="last")
+    return sort_df.drop(columns=["_SORT_CREATEDON"]).reset_index(drop=True)
+
+
 def load_base_inputs(cfg: PipelineConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if cfg.input_source == "atenea":
         return load_atenea_inputs(cfg)
@@ -307,6 +317,8 @@ def load_atenea_inputs(cfg: PipelineConfig) -> tuple[pd.DataFrame, pd.DataFrame,
         export_excel=cfg.atenea_export_excel,
         cache_file=str(cfg.atenea_cache_file or cfg.workspace_dir / "token_cache.bin"),
     )
+    df_hist = _sort_atenea_raw_by_createdon(df_hist)
+    df_cupones = _sort_atenea_raw_by_createdon(df_cupones)
     df_hist_export = format_qbcn_export(df_hist)
     df_cupones_export = format_op_no_asig_export(df_cupones)
     df_cupones, df_hist = normalize_atenea_inputs(df_cupones, df_hist)

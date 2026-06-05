@@ -212,14 +212,21 @@ def _sort_for_excel_by_createdon(df: pd.DataFrame) -> pd.DataFrame:
     return sort_df.drop(columns=["_SORT_FECHA_CREACION"])
 
 
+def _sort_atenea_final_for_excel(df: pd.DataFrame) -> pd.DataFrame:
+    if "INDEX_ORIGINAL" in df.columns:
+        return df.sort_values("INDEX_ORIGINAL", kind="stable").reset_index(drop=True)
+    return _sort_for_excel_by_createdon(df)
+
+
 def run_and_export(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> PipelineResult:
     result = run_pipeline(cfg, cutoff_dt=cutoff_dt)
-    df_final_excel = _sort_for_excel_by_createdon(result.df_final_export)
     if result.atenea_qbcn_export is not None and result.atenea_op_no_asig_export is not None:
+        df_final_excel = _sort_atenea_final_for_excel(result.df_final_export)
         with pd.ExcelWriter(cfg.output_path, engine="openpyxl") as writer:
             df_final_excel.to_excel(writer, sheet_name="Distribucion_Final", index=False)
             result.atenea_qbcn_export.to_excel(writer, sheet_name="qb_cn", index=False)
             result.atenea_op_no_asig_export.to_excel(writer, sheet_name="op_no_asig", index=False)
     else:
+        df_final_excel = _sort_for_excel_by_createdon(result.df_final_export)
         df_final_excel.to_excel(cfg.output_path, index=False)
     return result
