@@ -296,7 +296,7 @@ def load_atenea_inputs(cfg: PipelineConfig) -> tuple[pd.DataFrame, pd.DataFrame,
     if not cfg.atenea_fecha_inicio or not cfg.atenea_fecha_fin:
         raise ValueError("Para input_source='atenea' informa atenea_fecha_inicio y atenea_fecha_fin.")
 
-    from extraccion_atenea import extraer_datos_atenea
+    from extraccion_atenea import extraer_datos_atenea, format_op_no_asig_export, format_qbcn_export
 
     print("\n=== DATOS DE ATENEA EN USO ===")
     print(f"Periodo: {cfg.atenea_fecha_inicio} -> {cfg.atenea_fecha_fin}")
@@ -307,7 +307,11 @@ def load_atenea_inputs(cfg: PipelineConfig) -> tuple[pd.DataFrame, pd.DataFrame,
         export_excel=cfg.atenea_export_excel,
         cache_file=str(cfg.atenea_cache_file or cfg.workspace_dir / "token_cache.bin"),
     )
+    df_hist_export = format_qbcn_export(df_hist)
+    df_cupones_export = format_op_no_asig_export(df_cupones)
     df_cupones, df_hist = normalize_atenea_inputs(df_cupones, df_hist)
+    df_hist.attrs["atenea_export_sheet"] = df_hist_export
+    df_cupones.attrs["atenea_export_sheet"] = df_cupones_export
 
     df_areas = pd.read_excel(cfg.areas_paises_path, sheet_name="Areas")
     df_paises = pd.read_excel(cfg.areas_paises_path, sheet_name="Paises")

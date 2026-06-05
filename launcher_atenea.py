@@ -18,20 +18,20 @@ def _get_workspace() -> Path:
 
 
 def _ask_cutoff() -> datetime:
-    fmt = "%d/%m/%Y %H:%M"
+    fmt = "%Y-%m-%d %H:%M"
     print("\n" + "=" * 50)
     print("  HORA DE CORTE")
     print("  Oportunidades creadas ANTES de esta fecha/hora")
     print("  se trataran como REAP (no redistribuidas).")
     print("=" * 50)
     while True:
-        raw = input("  Introduce la hora de corte (DD/MM/AAAA HH:MM): ").strip()
+        raw = input("  Introduce la hora de corte (YYYY-MM-DD HH:MM): ").strip()
         try:
             cutoff = datetime.strptime(raw, fmt)
             print(f"  -> Corte establecido: {cutoff.strftime(fmt)}\n")
             return cutoff
         except ValueError:
-            print("  Formato incorrecto. Ejemplo valido: 05/08/2025 10:00\n")
+            print("  Formato incorrecto. Ejemplo valido: 2026-06-05 10:00\n")
 
 
 def _ask_date(label: str) -> str:

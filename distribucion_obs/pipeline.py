@@ -28,10 +28,14 @@ class PipelineResult:
     df_final_export: pd.DataFrame
     df_hist_total: pd.DataFrame
     df_fresh: pd.DataFrame
+    atenea_qbcn_export: pd.DataFrame | None = None
+    atenea_op_no_asig_export: pd.DataFrame | None = None
 
 
 def run_pipeline(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> PipelineResult:
     df_cupones, df_hist, df_areas, df_paises = load_base_inputs(cfg)
+    atenea_qbcn_export = df_hist.attrs.get("atenea_export_sheet")
+    atenea_op_no_asig_export = df_cupones.attrs.get("atenea_export_sheet")
     input_rows = len(df_cupones)
     df_pilares_norm = load_pilares_map(cfg)
     df_sudoku_raw = load_sudoku_raw(cfg)
@@ -190,10 +194,32 @@ def run_pipeline(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> Pipe
         df_final_export=df_final_export,
         df_hist_total=df_hist_total,
         df_fresh=df_fresh,
+        atenea_qbcn_export=atenea_qbcn_export,
+        atenea_op_no_asig_export=atenea_op_no_asig_export,
     )
+
+
+def _sort_for_excel_by_createdon(df: pd.DataFrame) -> pd.DataFrame:
+    if "Fecha de creación" not in df.columns:
+        return df.copy()
+    sort_df = df.copy()
+    sort_key = pd.to_datetime(sort_df["Fecha de creación"], errors="coerce", dayfirst=True)
+    sort_df = sort_df.assign(_SORT_FECHA_CREACION=sort_key)
+    sort_cols = ["_SORT_FECHA_CREACION"]
+    if "INDEX_ORIGINAL" in sort_df.columns:
+        sort_cols.append("INDEX_ORIGINAL")
+    sort_df = sort_df.sort_values(sort_cols, kind="stable", na_position="last")
+    return sort_df.drop(columns=["_SORT_FECHA_CREACION"])
 
 
 def run_and_export(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> PipelineResult:
     result = run_pipeline(cfg, cutoff_dt=cutoff_dt)
-    result.df_final_export.to_excel(cfg.output_path, index=False)
+    df_final_excel = _sort_for_excel_by_createdon(result.df_final_export)
+    if result.atenea_qbcn_export is not None and result.atenea_op_no_asig_export is not None:
+        with pd.ExcelWriter(cfg.output_path, engine="openpyxl") as writer:
+            df_final_excel.to_excel(writer, sheet_name="Distribucion_Final", index=False)
+            result.atenea_qbcn_export.to_excel(writer, sheet_name="qb_cn", index=False)
+            result.atenea_op_no_asig_export.to_excel(writer, sheet_name="op_no_asig", index=False)
+    else:
+        df_final_excel.to_excel(cfg.output_path, index=False)
     return result

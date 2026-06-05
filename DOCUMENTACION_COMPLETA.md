@@ -19,12 +19,16 @@ Entrada de datos -> Preproceso y enriquecimiento -> Etapa 1 (asignacion por area
 
 ### Componentes del codigo
 - `run.py`: punto de entrada de ejecucion.
+- `extraccion_atenea.py`: conexion con Atenea/Dataverse, extraccion de `qb_cn` y oportunidades abiertas no asignadas.
+- `probar_ownerid.py`: prueba/asignacion automatica de `ownerid` en Atenea desde `Distribucion_Final.xlsx`.
 - `distribucion_obs/config.py`: configuracion de rutas y parametros.
-- `distribucion_obs/loaders.py`: lectura de archivos fuente Excel.
+- `distribucion_obs/loaders.py`: lectura de archivos fuente Excel o DataFrames extraidos desde Atenea.
 - `distribucion_obs/preprocess.py`: limpieza, enriquecimiento, separacion fresh/reap/historico y calculos preliminares.
 - `distribucion_obs/stages.py`: orquestacion de etapa 1 y etapa 2.
 - `distribucion_obs/pipeline.py`: pipeline end-to-end y controles globales.
 - `distribucion_obs/extracted_functions.py`: motor principal de distribucion (A/B/C/T/E) y segunda etapa.
+- `launcher_atenea.py`: punto de entrada del ejecutable de Atenea.
+- `build_atenea.bat`: recompila el ejecutable `Distribucion_OBS_Atenea.exe`.
 
 ## 3) Orquestacion exacta del pipeline
 Flujo principal en `run.py` -> `run_and_export()` -> `run_pipeline()`.
@@ -45,7 +49,7 @@ Flujo principal en `run.py` -> `run_and_export()` -> `run_pipeline()`.
 
 ## 4) Archivos de entrada y salida
 
-### Entradas principales
+### Entradas principales - flujo Excel legacy
 1. Archivo de cupones abiertos (se toma el mas reciente en Downloads):
 - Prefijo esperado: `Oportunidades abiertas No Asignadas JE Totales...`
 
@@ -68,8 +72,44 @@ Flujo principal en `run.py` -> `run_and_export()` -> `run_pipeline()`.
 6. `OBS_PULL_PUSH.xlsx` (ruta configurada en `PipelineConfig`):
 - Hoja `PULL-PUSH` (normalizacion de pilar)
 
+### Entradas principales - flujo Atenea
+El flujo Atenea sustituye los dos Excels de Downloads por DataFrames extraidos directamente desde Dataverse:
+
+1. `qb_cn`:
+- Sale de `extraccion_atenea.py`.
+- Equivale al historico `qb_CN_V3_OBS...` que esperaba el codigo original.
+
+2. `op_no_asig`:
+- Sale de `extraccion_atenea.py`.
+- Equivale al Excel de oportunidades abiertas no asignadas que esperaba el codigo original.
+
+3. `Areas_Paises.xlsx`, `SUDOKU.xlsx`, `OBS_ESTRUCTURA_COMERCIAL.xlsx` y `OBS_PULL_PUSH.xlsx`:
+- Se siguen usando igual que en el flujo Excel.
+- `Areas_Paises.xlsx` sigue normalizando programas y paises.
+
+4. `token_cache.bin`:
+- Cache local de autenticacion MSAL para Atenea/Dataverse.
+- No contiene el codigo del proyecto; contiene tokens de usuario.
+- Si otro usuario ejecuta el programa, lo correcto es que tenga su propia cache/token de autenticacion, no compartir una cache personal.
+
 ### Salida
 - `Distribucion_Final.xlsx` en la raiz del proyecto.
+- En flujo Excel legacy: una hoja con el resultado final.
+- En flujo Atenea: tres hojas:
+  - `Distribucion_Final`
+  - `qb_cn`
+  - `op_no_asig`
+- Las hojas del flujo Atenea salen ordenadas por `Fecha de creación`.
+- `INDEX_ORIGINAL` se conserva en `Distribucion_Final` para trazabilidad: puede cambiar el orden visual del Excel, pero no se pierde el indice original del pipeline.
+
+### Export auxiliar de leads
+Cuando se ejecuta el flujo Atenea, tambien se guarda una copia de la extraccion en:
+
+```text
+leads\leads_YYYY-MM-DD_YYYY-MM-DD.xlsx
+```
+
+Ese archivo contiene las hojas `qb_cn` y `op_no_asig` con el formato y orden de columnas esperado por los CSV/Excels historicos.
 
 ## 5) Librerias usadas
 
@@ -90,6 +130,10 @@ Parametros clave:
 - `downloads_dir`: carpeta donde se busca el ultimo archivo de abiertos e historico.
 - `areas_paises_path`, `sudoku_path`, `estructura_path`, `pilares_path`.
 - `output_path`.
+- `input_source`: `excel` o `atenea`.
+- `atenea_fecha_inicio`, `atenea_fecha_fin`: periodo de extraccion desde Atenea.
+- `atenea_cache_file`: ruta de `token_cache.bin`.
+- `atenea_export_excel`: si `True`, exporta copia de leads en carpeta `leads`.
 - `pilar_band_web`, `pilar_band_busc`: bandas blandas para desviacion de Web/Buscadores.
 - `time_limit`: limite del solver CBC (segundos).
 - `stage2_w_country`, `stage2_w_program`: pesos de etapa 2.
@@ -296,8 +340,17 @@ Si hay violacion, lanza error/assert.
 - `df_final_export`
 - `df_hist_total`
 - `df_fresh`
+- `atenea_qbcn_export`
+- `atenea_op_no_asig_export`
 
 `run_and_export()` guarda `df_final_export` en `output_path`.
+
+Si el origen es Atenea y existen `atenea_qbcn_export` / `atenea_op_no_asig_export`, `run_and_export()` escribe `Distribucion_Final.xlsx` con 3 hojas:
+- `Distribucion_Final`
+- `qb_cn`
+- `op_no_asig`
+
+La hoja `Distribucion_Final` se ordena por `Fecha de creación` solo para el Excel. La columna `INDEX_ORIGINAL` se mantiene para poder reconstruir el orden interno del pipeline y validar que no se perdieron filas.
 
 ## 12) Ejecucion desde cero
 
@@ -314,6 +367,7 @@ pip install -r requirements.txt
 ```
 
 ### 12.3 Ejecutar
+#### Flujo Excel legacy
 ```bash
 python run.py
 ```
@@ -324,6 +378,24 @@ Salida esperada en terminal:
 - comparativas por area
 - controles historico antes/despues
 - `OK - control filas entrada/salida: X -> X`
+
+#### Flujo Atenea
+```bash
+python run.py --source atenea --fecha-inicio 2026-06-01 --fecha-fin 2026-06-05
+```
+
+Notas:
+- `--fecha-inicio` y `--fecha-fin` se informan en formato `YYYY-MM-DD`.
+- El script pide la hora de corte por pantalla.
+- Se extraen datos de Atenea/Dataverse usando MSAL.
+- Se genera `Distribucion_Final.xlsx` con 3 hojas.
+- Se genera copia de leads en `leads\leads_YYYY-MM-DD_YYYY-MM-DD.xlsx`.
+
+Orden recomendado de prueba:
+1. Ejecutar distribucion Atenea.
+2. Revisar `Distribucion_Final.xlsx`.
+3. Ejecutar dry-run de asignacion automatica.
+4. Solo si el dry-run es correcto, aplicar ownerid.
 
 ### 12.4 Ejecucion con rutas custom
 Puede crearse `PipelineConfig` manual en un script corto:
@@ -339,13 +411,95 @@ cfg = PipelineConfig(
 run_and_export(cfg)
 ```
 
-## 13) Troubleshooting
+## 13) Asignacion automatica de ownerid en Atenea
+
+Archivo: `probar_ownerid.py`
+
+Este script usa la API de Dataverse, que es lo que hay detras de Atenea, para actualizar el campo `ownerid` de oportunidades.
+
+La distribucion calcula el destino en la columna `EQUIPO_FINAL`. Ese valor se resuelve contra Atenea como:
+1. `team.name`
+2. si no existe como equipo, `systemuser.fullname`
+
+Si un nombre coincide con varios equipos o usuarios, el script falla. No elige a ciegas.
+
+### 13.1 Dry-run de una oportunidad
+No cambia Atenea:
+
+```bash
+python probar_ownerid.py --id 2021-002714891
+```
+
+### 13.2 Aplicar una oportunidad
+Actualiza Atenea solo para esa oportunidad:
+
+```bash
+python probar_ownerid.py --id 2021-002714891 --apply
+```
+
+### 13.3 Probar destino manual
+Usa `--owner` solo con una oportunidad individual:
+
+```bash
+python probar_ownerid.py --id 2021-002714891 --owner Equipo_A1
+python probar_ownerid.py --id 2021-002714891 --owner Equipo_A1 --apply
+```
+
+### 13.4 Dry-run masivo
+No cambia Atenea:
+
+```bash
+python probar_ownerid.py --all
+```
+
+Para probar pocas filas:
+
+```bash
+python probar_ownerid.py --all --limit 10
+```
+
+### 13.5 Aplicar masivo
+Actualiza Atenea:
+
+```bash
+python probar_ownerid.py --all --apply
+```
+
+### 13.6 Controles de seguridad del masivo
+El masivo:
+- Lee `Distribucion_Final.xlsx`.
+- Busca cada oportunidad por `opportunityid` o `ID de la Oportunidad`.
+- Resuelve `EQUIPO_FINAL` como equipo o usuario en Atenea.
+- Si el owner actual ya coincide con `EQUIPO_FINAL`, lo salta (`SKIPPED_ALREADY_OWNER`).
+- Si el owner actual en Atenea no coincide con el owner original guardado en el Excel (`_ownerid_value`, `owneridname` o `Propietario`), lo marca como `SKIPPED_OWNER_CHANGED`.
+- En modo `--apply`, si hay errores o owners cambiados, no aplica ningun cambio masivo.
+- Genera log Excel en `crm_ownerid_logs`.
+
+Esto evita aplicar cambios sobre oportunidades que alguien haya reasignado manualmente despues de generar `Distribucion_Final.xlsx`.
+
+### 13.7 Estados del log
+- `DRY_RUN_CHANGE`: se cambiaria si se ejecutara con `--apply`.
+- `READY_TO_APPLY`: fila validada antes de aplicar.
+- `APPLIED`: cambio aplicado correctamente.
+- `SKIPPED_ALREADY_OWNER`: ya estaba en el owner correcto.
+- `SKIPPED_OWNER_CHANGED`: el owner actual cambio respecto al Excel.
+- `ERROR`: error de validacion.
+- `ERROR_APPLY`: fallo durante el PATCH real.
+
+### 13.8 Riesgos principales
+- Nombres de `EQUIPO_FINAL` que no existan exactamente en Atenea.
+- Usuarios/equipos duplicados por nombre.
+- Cambios manuales entre la generacion del Excel y la aplicacion.
+- Rendimiento: 600-700 oportunidades implican varias llamadas API por oportunidad; el dry-run puede tardar.
+- Autenticacion: cada usuario debe autenticarse con sus permisos. Compartir `token_cache.bin` no es recomendable.
+
+## 14) Troubleshooting
 
 1. `No se encontro archivo con prefijo ...`
 - Verificar que el archivo mas reciente este en `downloads_dir` con prefijo correcto.
 
 2. `No se pudo leer hora de corte ... O22`
-- Solo aplica al ejecutar via `run.py`. En el ejecutable `.exe`, la hora de corte se introduce por teclado al inicio (ver seccion 16.5).
+- Solo aplica al ejecutar via `run.py`. En el ejecutable `.exe`, la hora de corte se introduce por teclado al inicio (ver seccion 17.6).
 
 3. `Control de filas fallo: entrada != salida`
 - Revisar deduplicacion por ID y columna `INDEX_ORIGINAL`.
@@ -358,26 +512,49 @@ run_and_export(cfg)
 - Revisar `E_TEAM_FIXED_WEIGHTS` y `E_SHARE_TARGET_IG`.
 - Confirmar que equipos E incluyan IG y XP.
 
-## 14) Parametros de negocio que mas se tocan
+6. Atenea pide login o falla autenticacion
+- Revisar `token_cache.bin`.
+- Si es otro usuario, debe autenticarse con su propia cuenta y permisos.
+
+7. `No se encontro owner destino como team ni systemuser`
+- Revisar que `EQUIPO_FINAL` exista exactamente en Atenea.
+- Ejemplo: `Equipo_A1` no es lo mismo que `Equipo A1`.
+
+8. `SKIPPED_OWNER_CHANGED`
+- La oportunidad ya no esta en el mismo owner que cuando se genero el Excel.
+- Revisar manualmente antes de forzar.
+
+9. `Distribucion_Final.xlsx` no tiene 3 hojas
+- Solo tendra 3 hojas cuando se ejecute con `--source atenea`.
+- El flujo Excel legacy mantiene una sola hoja.
+
+## 15) Parametros de negocio que mas se tocan
 - `E_TEAM_FIXED_WEIGHTS` (area E).
 - `E_SHARE_TARGET_IG` (area E).
 - `pilar_band_web`, `pilar_band_busc` (config).
 - `stage2_w_country`, `stage2_w_program` (config).
 - `time_limit` de solver (config).
 
-## 15) Notas sobre archivos legacy
+## 16) Notas sobre archivos legacy
 - `Distribucion_OBS_legacy.ipynb`: version historica/no modular.
 - `Manual_Codigo_Distribucion_OBS.docx`: documentacion previa.
-- `build/` y `dist/`: artefactos de PyInstaller (ver seccion 16).
+- `build/` y `dist/`: artefactos de PyInstaller (ver seccion 17).
+- `diagnostico_atenea.py`: herramienta de diagnostico usada durante desarrollo. Eliminada porque el flujo Atenea ya quedo integrado y validado.
 
 El flujo vigente y mantenible para desarrollo actual es el modular (`run.py` + paquete `distribucion_obs`).
 
-## 16) Ejecutable distribuible (.exe)
+## 17) Ejecutable distribuible (.exe)
 
-### 16.1 Descripcion general
+### 17.1 Descripcion general
 Ademas del flujo de desarrollo (`run.py`), el proyecto genera un ejecutable `Distribucion_OBS.exe` autocontenido mediante PyInstaller. Cualquier usuario con acceso a la carpeta OneDrive puede ejecutarlo sin tener Python instalado.
 
-### 16.2 Archivos involucrados
+Tambien existe un ejecutable especifico para el flujo Atenea:
+- `Distribucion_OBS_Atenea.exe`
+- Se compila con `build_atenea.bat`.
+- Usa `launcher_atenea.py`.
+- Pide hora de corte, fecha inicio y fecha fin.
+
+### 17.2 Archivos involucrados
 
 | Archivo | Rol |
 |---|---|
@@ -385,8 +562,11 @@ Ademas del flujo de desarrollo (`run.py`), el proyecto genera un ejecutable `Dis
 | `build.bat` | Script para compilar/recompilar el ejecutable con doble click |
 | `dist/Distribucion_OBS.exe` | Ejecutable generado por PyInstaller |
 | `Distribucion_OBS.exe` | Copia del exe en la raiz del proyecto (esta es la version que se usa) |
+| `launcher_atenea.py` | Punto de entrada del ejecutable Atenea |
+| `build_atenea.bat` | Script para compilar/recompilar `Distribucion_OBS_Atenea.exe` |
+| `dist/Distribucion_OBS_Atenea.exe` | Ejecutable Atenea generado por PyInstaller |
 
-### 16.3 Como recompilar el ejecutable
+### 17.3 Como recompilar el ejecutable legacy
 Cada vez que se modifique el codigo fuente, ejecutar `build.bat` con doble click. El proceso:
 1. Llama a PyInstaller con Python 3.14
 2. Genera `dist\Distribucion_OBS.exe`
@@ -394,7 +574,22 @@ Cada vez que se modifique el codigo fuente, ejecutar `build.bat` con doble click
 
 La carpeta `build/` que genera PyInstaller es temporal y puede borrarse sin problema.
 
-### 16.4 Resolucion de rutas en modo frozen
+### 17.4 Como recompilar el ejecutable Atenea
+Ejecutar:
+
+```bat
+build_atenea.bat
+```
+
+Genera:
+
+```text
+dist\Distribucion_OBS_Atenea.exe
+```
+
+Este ejecutable sigue el flujo Atenea, no el flujo Excel legacy.
+
+### 17.5 Resolucion de rutas en modo frozen
 En PyInstaller `--onefile`, `__file__` apunta a una carpeta temporal de extraccion (`_MEIxxx`), no a la ubicacion real del exe. `launcher.py` resuelve esto con:
 
 ```python
@@ -406,7 +601,7 @@ else:
 
 Por eso el exe debe estar en la misma carpeta que `Areas_Paises.xlsx` y `SUDOKU.xlsx` (la raiz del proyecto en OneDrive).
 
-### 16.5 Hora de corte interactiva
+### 17.6 Hora de corte interactiva
 Al ejecutar el `.exe`, el programa pide la hora de corte por terminal antes de iniciar el pipeline:
 
 ```
@@ -423,7 +618,20 @@ Formato requerido: `DD/MM/AAAA HH:MM`. Si el formato es incorrecto, vuelve a ped
 
 Esto sustituye la lectura de la celda `O22` de `SUDOKU.xlsx`. La funcion `split_reap_fresh_hist()` acepta `cutoff_dt` como parametro opcional: si se pasa, lo usa directamente; si es `None`, lee del SUDOKU (comportamiento legacy de `run.py`).
 
-### 16.6 Paquetes con datos o binarios incluidos explicitamente
+En `Distribucion_OBS_Atenea.exe`, ademas de hora de corte, se piden:
+- Hora de corte (`YYYY-MM-DD HH:MM`)
+- Fecha inicio qb_cn/op_no_asig (`YYYY-MM-DD`)
+- Fecha fin qb_cn/op_no_asig (`YYYY-MM-DD`)
+
+Ejemplo:
+
+```text
+Hora de corte: 2026-06-05 10:00
+Fecha inicio: 2026-06-01
+Fecha fin:    2026-06-05
+```
+
+### 17.7 Paquetes con datos o binarios incluidos explicitamente
 PyInstaller no detecta automaticamente todos los archivos de datos de terceros. El `build.bat` incluye:
 
 | Flag | Paquete | Motivo |
@@ -432,10 +640,16 @@ PyInstaller no detecta automaticamente todos los archivos de datos de terceros. 
 | `--collect-all pulp` | pulp | Binario `cbc.exe` del solver CBC |
 | `--collect-data openpyxl` | openpyxl | Templates de archivos Excel |
 
-### 16.7 Distribucion a otros usuarios
+### 17.8 Distribucion a otros usuarios
 Los usuarios solo necesitan:
 1. `Distribucion_OBS.exe` en la carpeta raiz del proyecto (OneDrive compartida)
 2. `Areas_Paises.xlsx` y `SUDOKU.xlsx` en la misma carpeta (ya estan en OneDrive)
 3. Los archivos `OBS_ESTRUCTURA_COMERCIAL.xlsx` y `OBS_PULL_PUSH.xlsx` sincronizados en su OneDrive
 4. Los archivos de cupones e historico en su carpeta `Downloads` con los prefijos correctos
+
+Para el flujo Atenea:
+1. Usar `Distribucion_OBS_Atenea.exe`.
+2. Tener permisos en Atenea/Dataverse.
+3. Autenticarse con su usuario cuando el programa lo pida.
+4. No compartir `token_cache.bin` entre usuarios.
 
