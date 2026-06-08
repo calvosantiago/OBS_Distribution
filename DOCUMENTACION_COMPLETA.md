@@ -458,11 +458,27 @@ Para probar pocas filas:
 python probar_ownerid.py --all --limit 10
 ```
 
+Si Dataverse responde con limite `429`, el script reintenta automaticamente. Parametros utiles:
+
+```bash
+python probar_ownerid.py --all --sleep 1 --max-retries 8 --retry-wait 45
+```
+
+- `--sleep`: pausa entre oportunidades.
+- `--max-retries`: numero de reintentos por peticion HTTP.
+- `--retry-wait`: espera base si Dataverse no informa `Retry-After`.
+
 ### 13.5 Aplicar masivo
 Actualiza Atenea:
 
 ```bash
 python probar_ownerid.py --all --apply
+```
+
+Para aplicar con mas margen frente a limites de Dataverse:
+
+```bash
+python probar_ownerid.py --all --apply --sleep 1 --max-retries 8 --retry-wait 45
 ```
 
 ### 13.6 Controles de seguridad del masivo
@@ -474,6 +490,7 @@ El masivo:
 - Si el owner actual en Atenea no coincide con el owner original guardado en el Excel (`_ownerid_value`, `owneridname` o `Propietario`), lo marca como `SKIPPED_OWNER_CHANGED`.
 - En modo `--apply`, si hay errores o owners cambiados, no aplica ningun cambio masivo.
 - Genera log Excel en `crm_ownerid_logs`.
+- El log incluye `http_retries`, con los reintentos usados en cada fila.
 
 Esto evita aplicar cambios sobre oportunidades que alguien haya reasignado manualmente despues de generar `Distribucion_Final.xlsx`.
 

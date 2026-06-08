@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,13 @@ import pandas as pd
 import requests
 
 from extraccion_atenea import AUTHORITY, CACHE_FILE, CLIENT_ID, ORG_URL, SCOPES
+
+
+REQUEST_SETTINGS = {
+    "max_retries": 5,
+    "retry_wait": 30.0,
+}
+REQUEST_RETRY_COUNT = 0
 
 
 def _parse_args() -> argparse.Namespace:
@@ -55,6 +63,24 @@ def _parse_args() -> argparse.Namespace:
         default=CACHE_FILE,
         help="Ruta de token_cache.bin. Por defecto usa el del workspace.",
     )
+    parser.add_argument(
+        "--sleep",
+        type=float,
+        default=0.35,
+        help="Pausa en segundos entre oportunidades en modo --all. Por defecto: 0.35.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=5,
+        help="Reintentos por peticion HTTP si Dataverse responde 429/5xx. Por defecto: 5.",
+    )
+    parser.add_argument(
+        "--retry-wait",
+        type=float,
+        default=30.0,
+        help="Espera base en segundos para 429 si Dataverse no informa Retry-After. Por defecto: 30.",
+    )
     args = parser.parse_args()
     if bool(args.id) == bool(args.all):
         parser.error("Indica una sola opcion: --id para una oportunidad o --all para masivo.")
@@ -62,6 +88,12 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--owner no se permite con --all; en masivo se usa EQUIPO_FINAL de cada fila.")
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit debe ser mayor que cero.")
+    if args.sleep < 0:
+        parser.error("--sleep no puede ser negativo.")
+    if args.max_retries < 0:
+        parser.error("--max-retries no puede ser negativo.")
+    if args.retry_wait <= 0:
+        parser.error("--retry-wait debe ser mayor que cero.")
     return args
 
 
@@ -117,8 +149,42 @@ def _headers(token: str) -> dict[str, str]:
     }
 
 
+def _retry_after_seconds(response: requests.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(float(retry_after), 1.0)
+        except ValueError:
+            pass
+    return max(REQUEST_SETTINGS["retry_wait"] * attempt, 1.0)
+
+
+def _request_with_retry(method: str, url: str, **kwargs: Any) -> requests.Response:
+    global REQUEST_RETRY_COUNT
+    max_retries = int(REQUEST_SETTINGS["max_retries"])
+    for attempt in range(1, max_retries + 2):
+        response = requests.request(method, url, **kwargs)
+        retryable = response.status_code == 429 or 500 <= response.status_code <= 599
+        if not retryable or attempt > max_retries:
+            return response
+
+        REQUEST_RETRY_COUNT += 1
+        wait_seconds = _retry_after_seconds(response, attempt)
+        print(
+            f"[RETRY] {method} {response.status_code}. "
+            f"Intento {attempt}/{max_retries}. Esperando {wait_seconds:.0f}s..."
+        )
+        time.sleep(wait_seconds)
+    return response
+
+
 def _get_json(token: str, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-    response = requests.get(f"{ORG_URL}/api/data/v9.2/{path}", headers=_headers(token), params=params)
+    response = _request_with_retry(
+        "GET",
+        f"{ORG_URL}/api/data/v9.2/{path}",
+        headers=_headers(token),
+        params=params,
+    )
     if response.status_code != 200:
         raise RuntimeError(f"GET {path} fallo {response.status_code}: {response.text}")
     return response.json()
@@ -267,7 +333,8 @@ def _find_opportunity(token: str, row: pd.Series) -> dict[str, str]:
 
 def _patch_owner(token: str, opportunityid: str, owner: dict[str, str]) -> None:
     body = {"ownerid@odata.bind": f"/{owner['entity_set']}({owner['id']})"}
-    response = requests.patch(
+    response = _request_with_retry(
+        "PATCH",
         f"{ORG_URL}/api/data/v9.2/opportunities({opportunityid})",
         headers={**_headers(token), "If-Match": "*"},
         json=body,
@@ -321,6 +388,7 @@ def _base_log_row(
         "owner_destino_id": "",
         "apply": apply,
         "force_owner_mismatch": force_owner_mismatch,
+        "http_retries": 0,
     }
 
 
@@ -334,6 +402,7 @@ def _prepare_owner_change(
     owner_override: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, str] | None, dict[str, str] | None]:
     log_row = _base_log_row(excel_path, row, apply, force_owner_mismatch)
+    retries_before = REQUEST_RETRY_COUNT
     try:
         owner_name = owner_override or _clean_value(row.get("EQUIPO_FINAL", ""))
         if not owner_name:
@@ -377,6 +446,8 @@ def _prepare_owner_change(
         log_row["status"] = "ERROR"
         log_row["error"] = str(exc)
         return log_row, None, None
+    finally:
+        log_row["http_retries"] = REQUEST_RETRY_COUNT - retries_before
 
 
 def _write_log_rows(log_rows: list[dict[str, Any]]) -> Path:
@@ -410,6 +481,8 @@ def _run_all(args: argparse.Namespace, token: str, excel_path: Path) -> None:
                 force_owner_mismatch=args.force_owner_mismatch,
             )
         )
+        if args.sleep:
+            time.sleep(args.sleep)
 
     log_rows = [item[0] for item in prepared]
     blocking = [row for row in log_rows if row["status"] in {"ERROR", "SKIPPED_OWNER_CHANGED"}]
@@ -425,8 +498,14 @@ def _run_all(args: argparse.Namespace, token: str, excel_path: Path) -> None:
             if log_row["status"] != "READY_TO_APPLY":
                 continue
             try:
+                retries_before = REQUEST_RETRY_COUNT
                 _patch_owner(token, opportunity["id"], owner)
                 log_row["status"] = "APPLIED"
+                log_row["http_retries"] = int(log_row.get("http_retries", 0)) + (
+                    REQUEST_RETRY_COUNT - retries_before
+                )
+                if args.sleep:
+                    time.sleep(args.sleep)
             except Exception as exc:
                 log_row["status"] = "ERROR_APPLY"
                 log_row["error"] = str(exc)
@@ -487,6 +566,8 @@ def _run_one(args: argparse.Namespace, token: str, excel_path: Path) -> None:
 
 def main() -> None:
     args = _parse_args()
+    REQUEST_SETTINGS["max_retries"] = args.max_retries
+    REQUEST_SETTINGS["retry_wait"] = args.retry_wait
     excel_path = Path(args.excel)
     token = _get_token(args.cache_file)
     if args.all:
