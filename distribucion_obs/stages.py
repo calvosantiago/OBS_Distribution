@@ -93,13 +93,23 @@ def run_first_stage(
     )
 
     df_final_total = pd.concat(
-        [df_final_a, df_final_b, df_final_c, df_final_t, df_final_e, df_corte, df_special],
+        [
+            df_final_a,
+            df_final_b,
+            df_final_c,
+            df_final_t,
+            df_final_e,
+            df_reap_validas,
+            df_corte,
+            df_special,
+        ],
         ignore_index=True,
     )
+    dedup_cols = ['INDEX_ORIGINAL'] if 'INDEX_ORIGINAL' in df_final_total.columns else ['ID de la Oportunidad']
+    sort_cols = [c for c in ['INDEX_ORIGINAL', 'ID de la Oportunidad'] if c in df_final_total.columns]
     df_final_total = (
-        df_final_total.sort_values(["ID de la Oportunidad", "INDEX_ORIGINAL"], kind="stable")
-        .drop_duplicates(subset=["ID de la Oportunidad"], keep="first")
-        .sort_values("INDEX_ORIGINAL", kind="stable")
+        df_final_total.sort_values(sort_cols, kind='stable')
+        .drop_duplicates(subset=dedup_cols, keep='first')
         .reset_index(drop=True)
     )
     return df_final_total

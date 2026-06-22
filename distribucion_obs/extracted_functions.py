@@ -2873,10 +2873,11 @@ def construir_final_con_reap(
             ~key_org_norm.reindex(df_reap_org.index).isin(keys_base).fillna(False)
         ].copy()
         df_final_ajustado = pd.concat([base, reap_to_add], ignore_index=True)
-        if key_res in df_final_ajustado.columns:
+        dedup_key = 'INDEX_ORIGINAL' if 'INDEX_ORIGINAL' in df_final_ajustado.columns else key_res
+        if dedup_key in df_final_ajustado.columns:
             df_final_ajustado = (df_final_ajustado
-                                 .sort_values(by=[key_res])
-                                 .drop_duplicates(subset=[key_res], keep='first')
+                                 .sort_values(by=[dedup_key])
+                                 .drop_duplicates(subset=[dedup_key], keep='first')
                                  .reset_index(drop=True))
 
     if 'INDEX_ORIGINAL' in df_final_ajustado.columns:

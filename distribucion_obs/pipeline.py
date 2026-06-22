@@ -32,6 +32,68 @@ class PipelineResult:
     atenea_op_no_asig_export: pd.DataFrame | None = None
 
 
+
+def _format_missing_input_rows(df_input: pd.DataFrame, missing: list[int], limit: int = 10) -> str:
+    if not missing:
+        return ""
+
+    cols = [
+        "ID de la Oportunidad",
+        "Fecha de creación",
+        "Programa de Interes",
+        "País",
+        "País (Contacto) (Contacto)",
+        "Country (Cliente potencial original) (Lead)",
+        "Pillar (Campaña de origen) (Campaña)",
+        "Pillar Name (Campaña de origen) (Campaña)",
+        "SubPillar (Campaña de origen) (Campaña)",
+        "SubPillar Name (Campaña de origen) (Campaña)",
+        "Propietario",
+        "Tipo de Re-Apertura",
+        "Tipo",
+        "TIPO",
+        "IDIOMA",
+        "AREA",
+        "PILAR_NORM",
+    ]
+    cols = [c for c in cols if c in df_input.columns]
+    if not cols:
+        return ""
+
+    lines = ["", "Filas de entrada que no llegaron al export final:"]
+    for idx in missing[:limit]:
+        if idx < 0 or idx >= len(df_input):
+            lines.append(f"  INDEX_ORIGINAL={idx}: fuera del rango de entrada")
+            continue
+        row = df_input.iloc[idx]
+        lines.append(f"  INDEX_ORIGINAL={idx}:")
+        possible_causes = []
+        for norm_col in ["AREA", "TIPO", "IDIOMA"]:
+            if norm_col in df_input.columns:
+                norm_value = row.get(norm_col)
+                norm_text = "" if pd.isna(norm_value) else str(norm_value).strip().upper()
+                if norm_text in {"", "NAN", "NONE", "<NA>"}:
+                    possible_causes.append(f"{norm_col} sin normalizar")
+        if "AREA" in df_input.columns:
+            area_text = "" if pd.isna(row.get("AREA")) else str(row.get("AREA")).strip().upper()
+            if area_text and area_text not in {"A", "B", "C", "T", "E", "NAN", "NONE", "<NA>"}:
+                possible_causes.append(f"AREA fuera de A/B/C/T/E: {area_text}")
+        if "PILAR_NORM" in df_input.columns:
+            pilar_value = row.get("PILAR_NORM")
+            pilar_text = "" if pd.isna(pilar_value) else str(pilar_value).strip().upper()
+            if pilar_text in {"", "NAN", "NONE", "<NA>"}:
+                possible_causes.append("PILAR_NORM sin normalizar")
+        if possible_causes:
+            lines.append(f"    Posible causa: {'; '.join(possible_causes)}")
+        for col in cols:
+            value = row.get(col)
+            if pd.isna(value):
+                value = "<NA>"
+            lines.append(f"    {col}: {value}")
+    if len(missing) > limit:
+        lines.append(f"  ... {len(missing) - limit} filas faltantes adicionales no mostradas")
+    return "\n".join(lines)
+
 def run_pipeline(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> PipelineResult:
     df_cupones, df_hist, df_areas, df_paises = load_base_inputs(cfg)
     atenea_qbcn_export = df_hist.attrs.get("atenea_export_sheet")
@@ -182,6 +244,7 @@ def run_pipeline(cfg: PipelineConfig, cutoff_dt: datetime | None = None) -> Pipe
                 missing = sorted(in_idx - out_idx)
                 extra = sorted(out_idx - in_idx)
                 detail = f" missing_INDEX_ORIGINAL={missing[:20]} extra_INDEX_ORIGINAL={extra[:20]}"
+                detail += _format_missing_input_rows(df_cupones, missing)
             raise ValueError(
                 f"Control de filas falló: entrada={input_rows}, salida={output_rows}.{detail}"
             )
