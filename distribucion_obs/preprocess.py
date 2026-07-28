@@ -20,6 +20,55 @@ from .extracted_functions import (
     obtener_semana_comercial,
 )
 
+EXCLUDED_OWNER_NAMES = {
+    "MARIANA JOSEFINA GUZMAN MENDEZ",
+    "XÈNIA PÉREZ CARO",
+}
+
+EXCLUDED_CAMPAIGN_VALUES = {
+    "BECAS",
+    "CUPONES ASESOR",
+    "EMPRESA GRUPO PLANETA",
+    "FIDELIZACIÓN",
+    "FIDELIZACION",
+    "RECUPÓN",
+    "RECUPON",
+    "REF/RECUP",
+    "OTROS",
+}
+
+
+def _upper_clean(values: pd.Series) -> pd.Series:
+    return values.astype(str).str.strip().str.upper()
+
+def _mask_excluded_owner(df: pd.DataFrame) -> pd.Series:
+    if df.empty or "Propietario" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return _upper_clean(df["Propietario"]).isin(EXCLUDED_OWNER_NAMES)
+
+
+def _mask_distribution_excluded(df: pd.DataFrame) -> pd.Series:
+    if df.empty:
+        return pd.Series(False, index=df.index)
+
+    mask = pd.Series(False, index=df.index)
+    campaign_cols = [
+        "Pillar (Campaña de origen) (Campaña)",
+        "Pillar Name (Campaña de origen) (Campaña)",
+        "SubPillar (Campaña de origen) (Campaña)",
+        "SubPillar Name (Campaña de origen) (Campaña)",
+        "PILAR_NORM",
+    ]
+    for col in campaign_cols:
+        if col in df.columns:
+            mask = mask | _upper_clean(df[col]).isin(EXCLUDED_CAMPAIGN_VALUES)
+
+    team_cols = ["Equipo Asignado", "Propietario", "EQUIPO_FINAL"]
+    for col in team_cols:
+        if col in df.columns:
+            mask = mask | _upper_clean(df[col]).eq("EQUIPO_REFERIDOS")
+
+    return mask | _mask_pmax(df)
 
 def _mask_pmax(df: pd.DataFrame) -> pd.Series:
     """Máscara de filas cuyo subpilar contenga 'pmax' (case-insensitive, coincidencia parcial)."""
@@ -227,6 +276,14 @@ def enrich_with_area_country_pillar(
     df_cupones["PILAR_NORM"] = df_cupones["Pillar (Campaña de origen) (Campaña)"].map(mapa_pilares)
     df_hist["PILAR_NORM"] = df_hist["Pillar (Campaña de origen) (Campaña)"].map(mapa_pilares)
 
+    # Exclusiones manuales de campaña/equipo: no participan en histórico/cadencia.
+    mask_excluded_hist = _mask_distribution_excluded(df_hist)
+    if mask_excluded_hist.any():
+        print(
+            "\n=== CONTROL EXCLUSIONES CAMPAÑA/EQUIPO ===\n"
+            f"Histórico excluido de cálculo: {int(mask_excluded_hist.sum())}"
+        )
+        df_hist = df_hist.loc[~mask_excluded_hist].copy()
     # Google Search Argentina se gestiona manualmente, igual que PMAX:
     # no participa en histórico/cadencia ni en distribución.
     mask_gs_arg_hist = _mask_google_search_argentina(df_hist)
@@ -265,11 +322,15 @@ def build_hist_qbcn(df_hist: pd.DataFrame, df_areas: pd.DataFrame) -> pd.DataFra
     equipos = sum(equipos_area.values(), []) + ["Equipo_E1"]
 
     filtro_base = (df_hist_qbcn["Equipo Asignado"] != "Equipo_Referidos") & (~df_hist_qbcn["PILAR_NORM"].isin(["REF/RECUP", "OTROS"]))
+    mask_owner_excluido = _mask_excluded_owner(df_hist_qbcn)
+    if mask_owner_excluido.any():
+        print(f"\n=== CONTROL PROPIETARIOS EXCLUIDOS ===")
+        print(f"Histórico excluido de cálculo: {int(mask_owner_excluido.sum())}")
     filtro_mst_mba_esp = df_hist_qbcn["TIPO"].isin(["MST", "MBA"]) & (df_hist_qbcn["IDIOMA"] == "ESP")
     filtro_eng = df_hist_qbcn["IDIOMA"] == "ENG"
     filtro_equipo = df_hist_qbcn["Equipo de Ventas (Usuario propietario) (Usuario)"].isin(equipos)
 
-    return df_hist_qbcn[filtro_base & filtro_equipo & (filtro_mst_mba_esp | filtro_eng)].copy()
+    return df_hist_qbcn[filtro_base & ~mask_owner_excluido & filtro_equipo & (filtro_mst_mba_esp | filtro_eng)].copy()
 
 
 def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -323,6 +384,33 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
         df_recup["SPECIAL_KIND"] = "RECUP_PASSTHROUGH"
     df = df.loc[~mask_recup_today].copy()
 
+    # Exclusiones manuales de campaña/equipo de hoy: passthrough sin reparto.
+    mask_campaign_excl_today = _mask_distribution_excluded(df)
+    df_campaign_excl = df.loc[mask_campaign_excl_today].copy()
+    if not df_campaign_excl.empty:
+        if "EQUIPO_FINAL" not in df_campaign_excl.columns:
+            df_campaign_excl["EQUIPO_FINAL"] = df_campaign_excl["Propietario"]
+        else:
+            df_campaign_excl["EQUIPO_FINAL"] = df_campaign_excl["EQUIPO_FINAL"].fillna(df_campaign_excl["Propietario"])
+        df_campaign_excl["SPECIAL_KIND"] = "CAMPAIGN_EXCLUDED_PASSTHROUGH"
+        print(
+            "\n=== CONTROL EXCLUSIONES CAMPAÑA/EQUIPO ===\n"
+            f"Cupones hoy excluidos de reparto: {len(df_campaign_excl)}"
+        )
+    df = df.loc[~mask_campaign_excl_today].copy()
+    # Propietarios excluidos: se preservan en la salida final, pero no cuentan para
+    # reparto, historico acumulado ni cadencias.
+    mask_owner_excluido_today = _mask_excluded_owner(df)
+    df_owner_excluido = df.loc[mask_owner_excluido_today].copy()
+    if not df_owner_excluido.empty:
+        if "EQUIPO_FINAL" not in df_owner_excluido.columns:
+            df_owner_excluido["EQUIPO_FINAL"] = df_owner_excluido["Propietario"]
+        else:
+            df_owner_excluido["EQUIPO_FINAL"] = df_owner_excluido["EQUIPO_FINAL"].fillna(df_owner_excluido["Propietario"])
+        df_owner_excluido["SPECIAL_KIND"] = "OWNER_EXCLUDED_PASSTHROUGH"
+        print(f"\n=== CONTROL PROPIETARIOS EXCLUIDOS ===")
+        print(f"Cupones hoy excluidos de reparto: {len(df_owner_excluido)}")
+    df = df.loc[~mask_owner_excluido_today].copy()
     email_col = "Email (Contacto) (Contacto)"
     phone_col = "Teléfono (Cliente potencial) (Contacto)"
     df["_EMAIL_N"] = df[email_col].map(_norm_email) if email_col in df.columns else pd.NA
@@ -383,6 +471,12 @@ def preprocess_open_coupons(df_cupones: pd.DataFrame) -> tuple[pd.DataFrame, pd.
     if not df_recup.empty:
         # REF/RECUP y OTROS: passthrough idéntico al PMAX.
         df_special = pd.concat([df_special, df_recup], ignore_index=False)
+    if not df_campaign_excl.empty:
+        # Campañas/equipos excluidos: passthrough sin participar en cálculos.
+        df_special = pd.concat([df_special, df_campaign_excl], ignore_index=False)
+    if not df_owner_excluido.empty:
+        # Propietarios excluidos: passthrough sin participar en cálculos.
+        df_special = pd.concat([df_special, df_owner_excluido], ignore_index=False)
     return df, df_special
 
 
@@ -557,3 +651,6 @@ def compute_cadencia_preliminar(
     }
     cad_teo["E"] = cad_teo["T"]
     return cad_prelim_a, cad_prelim_t, cad_teo
+
+
+

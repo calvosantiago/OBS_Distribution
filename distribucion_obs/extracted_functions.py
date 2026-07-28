@@ -607,11 +607,31 @@ def distribuir_area_X(
     )
     bloques = (horas_area / 6).fillna(0).astype(float)
 
-    # Hist por equipo
+    # Hist por equipo. Los registros con PILAR_NORM vacío cuentan para cadencia global,
+    # pero no entran en ningún estimado/matriz por pilar.
+    _pilar_hist_text = df_hist_total['PILAR_NORM'].astype(str).str.strip().str.upper()
+    _mask_pilar_vacio_hist = df_hist_total['PILAR_NORM'].isna() | _pilar_hist_text.isin(['', 'NAN', 'NONE', '<NA>'])
+    df_hist_area_global_only = df_hist_total[
+        (df_hist_total['EQUIPO_FINAL'].isin(equipos_X)) &
+        _mask_pilar_vacio_hist &
+        (~df_hist_total['AREA'].isin(['T','E'])) &
+        (df_hist_total['IDIOMA'].isin(filt_idiomas)) &
+        (df_hist_total['TIPO'].isin(filt_tipos))
+    ].copy()
+
     cupones_hist = (
         df_hist_area.groupby('EQUIPO_FINAL').size()
         .reindex(equipos_X, fill_value=0).astype(int)
     )
+    _cupones_hist_global_only = (
+        df_hist_area_global_only.groupby('EQUIPO_FINAL').size()
+        .reindex(equipos_X, fill_value=0).astype(int)
+    )
+    if int(_cupones_hist_global_only.sum()) > 0:
+        print("\n=== CONTROL PILAR VACÍO EN GLOBAL ===")
+        print(f"Área {sigla_area}: histórico global-only por pilar vacío: {int(_cupones_hist_global_only.sum())}")
+        print(_cupones_hist_global_only[_cupones_hist_global_only > 0].to_string())
+    cupones_hist = cupones_hist + _cupones_hist_global_only
     # Los REAP de esta área que aparecen en el output final pueden tener PILAR_NORM / IDIOMA / TIPO
     # que no coinciden con los filtros de df_hist_area (p.ej. pilar sin mapear, tipo diferente).
     # Si esos REAP no se cuentan en cupones_hist, el equipo que los recibe obtiene demasiados FRESH
@@ -2991,3 +3011,4 @@ def run_segunda_etapa_v19(
     )
 
     return res_2a, df_final_ajustado
+
