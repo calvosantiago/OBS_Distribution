@@ -1865,10 +1865,12 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
                 .reindex(index=equipos, columns=pils, fill_value=0))
 
     pillar_total_hist  = df_hist_E['PILAR_NORM'].value_counts().reindex(pillars, fill_value=0)
-    pillar_total_reap  = (df_reap_validas_E['PILAR_NORM'].value_counts().reindex(pillars, fill_value=0)
-                          if len(df_reap_validas_E) > 0 else pd.Series(0, index=pillars))
+    pillar_total_hist_dv = df_hist_E_dv['PILAR_NORM'].value_counts().reindex(pillars, fill_value=0)
     pillar_total_fresh = df_fresh_E['PILAR_NORM'].value_counts().reindex(pillars, fill_value=0)
-    pillar_total_acum  = pillar_total_hist + pillar_total_reap + pillar_total_fresh
+    # df_hist_E/df_hist_E_dv ya incluyen las REAP válidas y los cupones por corte.
+    # Para objetivos no se suman otra vez; df_reap_validas_E solo se reinyecta al export.
+    pillar_total_acum  = pillar_total_hist + pillar_total_fresh
+    pillar_total_acum_dv = pillar_total_hist_dv + pillar_total_fresh
 
     estimado_pilar_E = pd.DataFrame(index=equipos_E, columns=pillars, dtype=int)
     for p in pillars:
@@ -1878,20 +1880,20 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
         ).values
 
     # Objetivo DV por pilar en E:
-    # fija Web/Buscadores por fracción IG y compensa en Redes Sociales,
-    # manteniendo el total IG agregado de estos pilares.
+    # fija Web/Buscadores por fracción IG con la DV completa y compensa en
+    # Redes Sociales, manteniendo el total IG agregado de estos pilares.
     dv_pillars_E = ['Web', 'Buscadores', 'Redes Sociales']
-    est_dv_E = {p: int(estimado_pilar_E.loc[IG_equipos, p].sum()) for p in dv_pillars_E}
-    ig_total_locked_E = int(sum(est_dv_E.values()))
-    ig_float_dv_E = {p: float(pillar_total_acum[p]) * share_target_IG for p in dv_pillars_E}
+    total_dv_pillars_E = int(pillar_total_acum_dv.reindex(dv_pillars_E, fill_value=0).sum())
+    ig_total_locked_E = int(np.floor(float(total_dv_pillars_E) * share_target_IG + 0.5))
+    ig_float_dv_E = {p: float(pillar_total_acum_dv[p]) * share_target_IG for p in dv_pillars_E}
 
     ig_web_E = int(np.floor(ig_float_dv_E['Web'] + 0.5))
     ig_busc_E = int(np.floor(ig_float_dv_E['Buscadores'] + 0.5))
-    ig_web_E = int(np.clip(ig_web_E, 0, int(pillar_total_acum['Web'])))
-    ig_busc_E = int(np.clip(ig_busc_E, 0, int(pillar_total_acum['Buscadores'])))
+    ig_web_E = int(np.clip(ig_web_E, 0, int(pillar_total_acum_dv['Web'])))
+    ig_busc_E = int(np.clip(ig_busc_E, 0, int(pillar_total_acum_dv['Buscadores'])))
     ig_rs_E = int(ig_total_locked_E - (ig_web_E + ig_busc_E))
 
-    rs_cap_E = int(pillar_total_acum['Redes Sociales'])
+    rs_cap_E = int(pillar_total_acum_dv['Redes Sociales'])
     if ig_rs_E < 0:
         excess = -ig_rs_E
         # Web es intocable: solo recorta Buscadores para compensar.
@@ -1902,7 +1904,7 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
     elif ig_rs_E > rs_cap_E:
         # Si RS no tiene capacidad, reparte excedente solo en Buscadores (Web intocable).
         need = ig_rs_E - rs_cap_E
-        room = int(pillar_total_acum['Buscadores']) - ig_busc_E
+        room = int(pillar_total_acum_dv['Buscadores']) - ig_busc_E
         add = min(need, room)
         ig_busc_E += add
         need -= add
@@ -1916,6 +1918,7 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
 
     # Conteo actual por equipo y pilar (hist ya incluye reaps válidas)
     current_pilar = _pillar_counts_E(df_hist_E, equipos_E, pillars).astype(int)
+    current_pilar_dv = _pillar_counts_E(df_hist_E_dv, equipos_E_dv_hist, pillars).astype(int)
 
     # Orden de pilar por prioridad descendente (Web > Busc > PV > RS)
     PILAR_PESO_E  = {'Web': 50, 'Buscadores': 30, 'P.Verticales': 0.5, 'Redes Sociales': 0.01}
@@ -1957,7 +1960,7 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
             max_ig_here = min(n_p, IG_remaining)
 
             if pilar in ig_target_dv_E:
-                current_ig_p = int(current_pilar.reindex(index=IG_equipos, columns=[pilar], fill_value=0)[pilar].sum())
+                current_ig_p = int(current_pilar_dv.reindex(index=IG_equipos_dv, columns=[pilar], fill_value=0)[pilar].sum())
                 desired_ig_here = int(ig_target_dv_E[pilar] - current_ig_p)
                 n_IG_p = int(np.clip(desired_ig_here, min_ig_here, max_ig_here))
             else:
@@ -1971,6 +1974,7 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
                        else max(equipos_E, key=lambda e: int(team_targets.get(e, 0)) - int(current_total.get(e, 0))))
             asignaciones[idx]                = elegido
             current_pilar.at[elegido, pilar] += 1
+            current_pilar_dv.at[elegido, pilar] += 1
             current_total[elegido]           += 1
             IG_remaining                     -= 1
 
@@ -1979,6 +1983,7 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
                        else max(equipos_E, key=lambda e: int(team_targets.get(e, 0)) - int(current_total.get(e, 0))))
             asignaciones[idx]                = elegido
             current_pilar.at[elegido, pilar] += 1
+            current_pilar_dv.at[elegido, pilar] += 1
             current_total[elegido]           += 1
             XP_remaining                     -= 1
 
@@ -2000,6 +2005,7 @@ def distribuir_area_E(df_fresh, df_hist_total, df_pesos_areas, df_reap_validas):
                 ))
             asignaciones[idx]                = elegido
             current_pilar.at[elegido, pilar_r] += 1
+            current_pilar_dv.at[elegido, pilar_r] += 1
             current_total[elegido]             += 1
 
     df_fresh_E['EQUIPO_FINAL'] = df_fresh_E.index.map(asignaciones)
@@ -2915,6 +2921,9 @@ def construir_final_con_reap(
         )
         df_final_ajustado.loc[mask_export, 'EQUIPO_FINAL'] = df_final_ajustado.loc[mask_export, 'EQUIPO_FINAL_EXPORT']
         df_final_ajustado = df_final_ajustado.drop(columns=['EQUIPO_FINAL_EXPORT'])
+
+    if 'Equipo Asignado' in df_final_ajustado.columns:
+        df_final_ajustado['Equipo Asignado'] = df_final_ajustado['EQUIPO_FINAL']
 
     print(f"[FINAL] REAP presentes en df_final_ajustado: {int((df_final_ajustado['TIPO_REPARTO']=='REAP').sum())}")
     return df_final_ajustado
